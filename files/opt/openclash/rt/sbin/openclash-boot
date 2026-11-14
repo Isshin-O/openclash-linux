@@ -1,0 +1,57 @@
+#!/bin/sh
+# openclash-rpcd 启动前执行：补上 OpenWrt 开机时准备好的几样东西（只做 OpenClash 用得到的）
+set -e
+
+# OpenWrt 的 /var 就是 /tmp，这几个目录开机即有（/var/etc、/var/state 由 install.sh 链接到这里）
+mkdir -p /tmp/lock /tmp/etc /tmp/state /tmp/sysinfo /var/run/ubus
+
+# procd 的 system board 从这里读型号；OpenWrt x86 上也是开机时按 DMI 写的
+d=/sys/class/dmi/id
+if [ ! -s /tmp/sysinfo/model ]; then
+	m=$(cat $d/sys_vendor $d/product_name 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')
+	echo "${m:-Generic PC}" >/tmp/sysinfo/model
+	echo "${m:-generic}" | tr 'A-Z ' 'a-z-' >/tmp/sysinfo/board_name
+fi
+
+# dnsmasq 的上游 DNS（OpenWrt 上由 netifd 按 WAN 口的 DNS 写）：取本机实际使用的 DNS 服务器。
+# systemd-resolved 时 /etc/resolv.conf 只有 127.0.0.53，真实上游在 /run/systemd/resolve/resolv.conf；回环地址一律不要
+f=/run/systemd/resolve/resolv.conf
+[ -s $f ] || f=/etc/resolv.conf
+mkdir -p /tmp/resolv.conf.d
+awk '$1 == "nameserver" && $2 !~ /^127\.|^::1$/' $f >/tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null || true
+
+# /etc/config/network：没有就按网卡生成（单网卡 = lan；有两张网卡时默认路由那张 = wan，另一张 = lan）；
+# 已有就只把各接口的 ipaddr 刷新成当前地址（OpenClash 用 network.lan.ipaddr 取本机局域网 IP）
+uci=/opt/openclash/rt/bin/uci
+cidr() { ip -4 -o addr show dev "$1" scope global 2>/dev/null | awk '{print $4; exit}'; }
+if [ ! -s /etc/config/network ]; then
+	def=$(ip -4 route show default | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}')
+	gw=$(ip -4 route show default dev "$def" 2>/dev/null | awk '{print $3; exit}')
+	other=$(for n in /sys/class/net/*; do n=${n##*/}; [ -e /sys/class/net/$n/device ] && [ "$n" != "$def" ] && [ -n "$(cidr $n)" ] && echo $n; done | head -n1)
+	[ -n "$def" ] || { echo "openclash-boot: 没有默认路由，无法生成 /etc/config/network" >&2; exit 1; }
+	if [ -n "$other" ]; then lan=$other wan=$def; else lan=$def wan=; fi
+	{
+		echo "# 由 openclash-boot 按本机网卡生成，可以手改（改了接口要重启 openclash-rpcd）"
+		echo
+		echo "config interface 'lan'"
+		echo "	option device '$lan'"
+		echo "	option proto 'static'"
+		echo "	option ipaddr '$(cidr $lan)'"
+		[ -n "$wan" ] || echo "	option gateway '$gw'"
+		if [ -n "$wan" ]; then
+			echo
+			echo "config interface 'wan'"
+			echo "	option device '$wan'"
+			echo "	option proto 'static'"
+			echo "	option ipaddr '$(cidr $wan)'"
+			echo "	option gateway '$gw'"
+		fi
+	} >/etc/config/network
+else
+	for s in $($uci -q show network | sed -n "s/^network\.\([^.=]*\)=interface$/\1/p"); do
+		dev=$($uci -q get network.$s.device || $uci -q get network.$s.ifname) || continue
+		a=$(cidr "$dev")
+		[ -z "$a" ] || [ "$a" = "$($uci -q get network.$s.ipaddr)" ] || $uci set network.$s.ipaddr="$a"
+	done
+	$uci commit network
+fi

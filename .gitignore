@@ -1,0 +1,6 @@
+/tests/
+/.planning/
+/.codebase-memory/
+*.run
+*.tar.gz
+*.ipk

@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenClash boot scripts (/etc/rc.d, like OpenWrt rcS)
+Requires=openclash-procd.service openclash-rpcd.service
+# 在 firewalld、Docker 之后：开机脚本要往它们的规则里加放行（没装这两个时这行不起作用）
+After=openclash-procd.service openclash-rpcd.service network-online.target firewalld.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/openclash/rt/sbin/openclash-view /opt/openclash/rt/sbin/openclash-rcS boot
+ExecStop=/opt/openclash/rt/sbin/openclash-view /opt/openclash/rt/sbin/openclash-rcS shutdown
+# OpenClash 的「延迟启动」会在 boot 里 sleep
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target

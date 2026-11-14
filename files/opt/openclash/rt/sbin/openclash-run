@@ -1,0 +1,8 @@
+#!/bin/sh
+# 在 OpenWrt 视图里执行命令（和 procd、网页栈同一个挂载/网络命名空间），例如：
+#   sudo openclash-run /etc/init.d/openclash restart
+#   sudo openclash-run opkg status luci-app-openclash
+pid=$(systemctl show -p MainPID --value openclash-procd.service)
+[ "${pid:-0}" -gt 0 ] || { echo "openclash-procd 没在运行：sudo systemctl start openclash-procd" >&2; exit 1; }
+[ $# -gt 0 ] || set -- /bin/sh
+exec nsenter -t "$pid" -m -n -- env PATH=/opt/openclash/rt/sbin:/opt/openclash/rt/bin:/usr/sbin:/usr/bin:/sbin:/bin "$@"

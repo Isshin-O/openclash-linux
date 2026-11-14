@@ -1,0 +1,12 @@
+[Unit]
+Description=OpenClash procd (OpenWrt service manager, not PID 1)
+Requires=openclash-ubusd.service
+After=openclash-ubusd.service openclash-rpcd.service
+
+[Service]
+# 不是 PID 1 时 procd 只连 ubus、托管服务实例（OpenClash 内核、watchdog、crond 都是它的子进程）；-S 日志走标准输出进 journald
+ExecStart=/opt/openclash/rt/sbin/openclash-view /opt/openclash/rt/sbin/procd -S -s /run/ubus/ubus.sock
+# procd 发现 /sys/fs/cgroup 可写就会在宿主 cgroup 根下建 services/ 子树；只读时退回按 PID 管理（只打一行警告）
+ProtectControlGroups=yes
+Restart=on-failure
+RestartSec=2

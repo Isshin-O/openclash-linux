@@ -1,0 +1,28 @@
+# openclash-linux：只用 dnsmasq 做 DNS 转发（OpenClash 的「本机 DNS 劫持」模式 1），选项和 OpenWrt 默认配置一致。
+# 这里的 dnsmasq 编译时去掉了 DHCP：局域网的地址分配仍由主路由负责，config dhcp 一类的段写了也不起作用。
+
+config dnsmasq
+	option domainneeded '1'
+	option boguspriv '1'
+	option filterwin2k '0'
+	option localise_queries '1'
+	option rebind_protection '1'
+	option rebind_localhost '1'
+	option local '/lan/'
+	option domain 'lan'
+	option expandhosts '1'
+	option nonegcache '0'
+	option cachesize '1000'
+	# 上游 DNS：openclash-boot 每次启动按本机实际使用的 DNS 服务器写这个文件（systemd-resolved 时取它背后的真实服务器，不是 127.0.0.53）
+	option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'
+	# 只在局域网网卡和 127.0.0.1 上监听，不占 systemd-resolved 的 127.0.0.53，也不占 Docker、隧道等网卡的地址
+	option nonwildcard '1'
+	list interface 'lan'
+	option localservice '1'
+	option ednspacket_max '1232'
+	option filter_aaaa '0'
+	option filter_a '0'
+	# 53 被别的程序占用时 install.sh 会改成别的端口；OpenClash 运行时按这个端口劫持局域网的 DNS 请求
+	option port '53'
+	# 以 nobody 运行，没有 ubus 的访问权限（OpenWrt 上是给 DHCP 事件用的）
+	option ubus '0'

@@ -1,0 +1,110 @@
+// ubus 的 network.interface* 对象，OpenWrt 上由 netifd 提供，普通 Linux 上没有。
+// 接口和设备的对应关系取自 /etc/config/network（openclash-boot 首次开机时按网卡生成），
+// 状态（地址、默认路由、DNS）每次调用时用 ip -j 现查，字段格式与 netifd 一致。
+// 用到它的：fw4（区域 → 设备）、上游 openclash_get_network.lua 和 luci.model.network（WAN 信息）。
+// 接口列表在 rpcd 启动时确定，改了 /etc/config/network 的接口要重启 openclash-rpcd。
+'use strict';
+
+import { cursor } from 'uci';
+import { popen, readfile, access } from 'fs';
+
+function ipj(args) {
+	let p = popen(`ip -j ${args} 2>/dev/null`);
+	let r = p ? json(p.read('all') || '[]') : null;
+	p?.close();
+	return r ?? [];
+}
+
+function dns_servers() {
+	// systemd-resolved 时 /etc/resolv.conf 只有 127.0.0.53，真实上游在这里
+	let f = access('/run/systemd/resolve/resolv.conf') ? '/run/systemd/resolve/resolv.conf' : '/etc/resolv.conf';
+	let r = [];
+	for (let l in split(readfile(f) ?? '', '\n')) {
+		let m = match(l, /^nameserver[ \t]+([^ \t]+)/);
+		if (m && !match(m[1], /^127\.|^::1$/))
+			push(r, m[1]);
+	}
+	return r;
+}
+
+function routes(dev, fam, any) {
+	let r = [];
+	for (let rt in ipj(`${fam} route show dev ${dev}`)) {
+		// netifd 的 route 只有它自己加的（默认路由等），不含网段直连路由
+		if (!rt.gateway)
+			continue;
+		let d = split(rt.dst == 'default' ? `${any}/0` : rt.dst, '/');
+		push(r, { target: d[0], mask: int(d[1] ?? (fam == '-4' ? 32 : 128)), nexthop: rt.gateway, metric: rt.metric ?? 0 });
+	}
+	return r;
+}
+
+function status(name) {
+	let s = cursor().get_all('network', name);
+	let dev = s?.device ?? s?.ifname;
+	if (!dev)
+		return null;
+
+	let link = ipj(`link show dev ${dev}`)[0];
+	let v4 = [], v6 = [];
+	for (let a in ipj(`addr show dev ${dev}`)[0]?.addr_info ?? []) {
+		if (a.family == 'inet')
+			push(v4, { address: a.local, mask: a.prefixlen });
+		else if (a.family == 'inet6' && a.scope == 'global')
+			push(v6, { address: a.local, mask: a.prefixlen });
+	}
+
+	return {
+		up: !!link && link.operstate != 'DOWN',
+		pending: false,
+		available: !!link,
+		autostart: true,
+		dynamic: false,
+		uptime: int(readfile('/proc/uptime') ?? 0),
+		l3_device: dev,
+		proto: s.proto ?? 'static',
+		device: dev,
+		metric: 0,
+		dns_metric: 0,
+		delegation: true,
+		'ipv4-address': v4,
+		'ipv6-address': v6,
+		'ipv6-prefix': [],
+		'ipv6-prefix-assignment': [],
+		route: [ ...routes(dev, '-4', '0.0.0.0'), ...routes(dev, '-6', '::') ],
+		'dns-server': dns_servers(),
+		'dns-search': [],
+		neighbors: [],
+		inactive: { 'ipv4-address': [], 'ipv6-address': [], route: [], 'dns-server': [], 'dns-search': [], neighbors: [] },
+		data: {}
+	};
+}
+
+let names = [];
+cursor().foreach('network', 'interface', s => { if (s['.name'] != 'loopback') push(names, s['.name']); });
+
+let objs = {
+	'network.interface': {
+		dump: {
+			call: () => ({ interface: filter(map(names, n => { let st = status(n); return st ? { interface: n, ...st } : null; }), x => x) })
+		},
+		status: {
+			args: { interface: '' },
+			call: req => status(req.args.interface) ?? {}
+		}
+	},
+	// fw4 会问设备状态，拿不到时按空处理
+	'network.device': {
+		status: { args: { name: '' }, call: () => ({}) }
+	},
+	'network': {
+		get_proto_handlers: { call: () => ({}) }
+	}
+};
+
+for (let n in names) {
+	let name = n;
+	objs[`network.interface.${name}`] = { status: { call: () => status(name) ?? {} } };
+}
+
+return objs;

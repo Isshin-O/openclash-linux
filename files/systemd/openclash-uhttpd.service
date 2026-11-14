@@ -1,0 +1,15 @@
+[Unit]
+Description=OpenClash uhttpd (LuCI web server)
+Requires=openclash-rpcd.service
+# 页头要用 procd 提供的 ubus system 对象
+Wants=openclash-procd.service
+After=openclash-rpcd.service openclash-procd.service network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/openclash/rt/sbin/openclash-view /opt/openclash/rt/sbin/openclash-uhttpd
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

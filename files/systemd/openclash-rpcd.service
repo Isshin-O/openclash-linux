@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenClash rpcd (LuCI session/ACL/UCI over ubus)
+Requires=openclash-ubusd.service
+After=openclash-ubusd.service
+
+[Service]
+# OpenWrt 开机时准备的目录、/etc/config/network 等；要在 rpcd 之前（network 垫片启动时读接口列表）
+ExecStartPre=/opt/openclash/rt/sbin/openclash-boot
+ExecStart=/opt/openclash/rt/sbin/openclash-view /opt/openclash/rt/sbin/rpcd -s /run/ubus/ubus.sock
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

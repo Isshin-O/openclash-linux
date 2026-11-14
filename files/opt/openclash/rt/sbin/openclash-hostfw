@@ -1,0 +1,87 @@
+#!/bin/sh
+# 放行宿主自己的防火墙（firewalld 或 ufw）：局域网能访问网页、DNS、OpenClash 的代理端口，并允许旁路由转发
+# （局域网网卡 ↔ 同一网卡、局域网网卡 ↔ utun）。nftables 里别的表丢弃的包，fw4 放行也没用，所以只能改宿主防火墙。
+#   apply   install.sh 和开机脚本调用；端口按当前配置，先撤销上次的再加
+#   remove  卸载时调用
+# 做过的改动记成撤销命令存在 $STATE，remove 照着执行。两种防火墙都没在运行时什么也不做。
+STATE=/opt/openclash/rt/.hostfw
+uci=/opt/openclash/rt/bin/uci
+
+ports() {
+	web=$($uci -q get uhttpd.main.listen_http | awk '{print $1}')
+	for o in dns_port:7874 http_port:7890 socks_port:7891 proxy_port:7892 mixed_port:7893 tproxy_port:7895 cn_port:9090; do
+		$uci -q get openclash.config.${o%%:*} || echo ${o#*:}
+	done
+	# dnsmasq 的端口（DNS 劫持模式 1 时局域网的 DNS 请求被重定向到这里）
+	echo "${web##*:} 53 $($uci -q get dhcp.@dnsmasq[0].port)"
+}
+
+remove() {
+	[ -f $STATE ] && sh $STATE >/dev/null 2>&1
+	rm -f $STATE
+}
+
+apply() {
+	remove
+	dev=$($uci -q get network.lan.device)
+	[ -n "$dev" ] || return 0
+	if firewall-cmd --state >/dev/null 2>&1; then
+		# --add-forward：同一区域内的接口之间允许转发；utun 放进局域网网卡所在的区域。
+		# 默认区域的区域内转发只对明确加进区域的接口生效，网卡没绑区域（不归 NetworkManager 管）时把它也加进默认区域
+		z=$(firewall-cmd --get-zone-of-interface="$dev" 2>/dev/null) && ifs=utun || { z=$(firewall-cmd --get-default-zone); ifs="utun $dev"; }
+		# 只加区域里原来没有的，撤销时也只撤这些（用户原有的 forward、端口不能被卸载撤掉）。
+		# --add-forward、--add-port、--add-interface 三类不能写在同一条命令里
+		add() {
+			[ -n "$1" ] || return 0
+			firewall-cmd -q $perm --zone="$z" $1 &&
+				echo "firewall-cmd -q $perm --zone='$z' $(echo "$1" | sed 's/--add-/--remove-/g')" >>$STATE || ok=0
+		}
+		ok=1
+		for perm in "" --permanent; do
+			firewall-cmd -q $perm --zone="$z" --query-forward || add --add-forward
+			# 已在区域端口范围里的不加：firewalld 往范围里加单个端口会把范围拆开，撤销后范围就缺了这个端口
+			have=$(firewall-cmd $perm --zone="$z" --list-ports) a=
+			for p in $(ports | sort -un); do
+				for t in tcp udp; do
+					in=0
+					for e in $have; do
+						r=${e%/*}
+						[ "${e#*/}" = $t ] && [ "$p" -ge "${r%-*}" ] && [ "$p" -le "${r#*-}" ] && in=1
+					done
+					[ $in = 1 ] || a="$a --add-port=$p/$t"
+				done
+			done
+			add "$a"
+			have=" $(firewall-cmd $perm --zone="$z" --list-interfaces) " a=
+			for i in $ifs; do case $have in *" $i "*) ;; *) a="$a --add-interface=$i" ;; esac; done
+			add "$a"
+		done
+		[ $ok = 1 ] && echo "openclash-hostfw: firewalld 区域 $z 已放行（$(ports | sort -un | tr '\n' ' ')端口，允许区域内转发，$ifs 加入该区域）" ||
+			echo "openclash-hostfw: firewalld 区域 $z 部分放行失败，见上面 firewall-cmd 的报错" >&2
+	elif ufw status 2>/dev/null | grep -q '^Status: active'; then
+		for p in $(ports | sort -un); do
+			ufw allow in on "$dev" to any port "$p" comment openclash-linux >/dev/null
+			echo "ufw delete allow in on '$dev' to any port '$p'" >>$STATE
+		done
+		for i in "$dev" utun; do
+			ufw route allow in on "$i" comment openclash-linux >/dev/null
+			echo "ufw route delete allow in on '$i'" >>$STATE
+		done
+		echo "openclash-hostfw: ufw 已放行（$(ports | sort -un | tr '\n' ' ')端口，允许 $dev、utun 转发）"
+	fi
+	# Docker 会把 iptables 的 FORWARD 链默认策略设成 DROP，旁路由转发也会被丢。
+	# 在它留给用户的 DOCKER-USER 链里只放行：局域网网卡 ↔ 同一网卡、局域网网卡 ↔ utun（不放行到容器网段）
+	if iptables -n -L DOCKER-USER >/dev/null 2>&1; then
+		for r in "-i $dev -o $dev" "-i $dev -o utun" "-i utun -o $dev"; do
+			iptables -I DOCKER-USER $r -m comment --comment openclash-linux -j ACCEPT
+			echo "iptables -D DOCKER-USER $r -m comment --comment openclash-linux -j ACCEPT" >>$STATE
+		done
+		echo "openclash-hostfw: Docker 的 DOCKER-USER 链已放行 $dev 与 utun 之间的转发"
+	fi
+}
+
+case $1 in
+	apply) apply ;;
+	remove) remove ;;
+	*) echo "用法：$0 apply|remove" >&2; exit 1 ;;
+esac

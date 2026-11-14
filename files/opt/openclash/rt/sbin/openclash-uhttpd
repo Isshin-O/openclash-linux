@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# 按 /etc/config/uhttpd 的 main 段拼出 uhttpd 命令行，相当于 OpenWrt 的 /etc/init.d/uhttpd（只实现用到的选项）
+set -eu
+RT=/opt/openclash/rt
+get() { "$RT/bin/uci" -q get "uhttpd.main.$1" || echo "${2-}"; }
+
+args=(-f -h "$(get home /www)" -r "$(get realm OpenWrt)" -x "$(get cgi_prefix /cgi-bin)"
+	-u "$(get ubus_prefix /ubus)" -t "$(get script_timeout 60)" -T "$(get network_timeout 30)"
+	-k "$(get http_keepalive 20)" -A "$(get tcp_keepalive 1)"
+	-n "$(get max_requests 3)" -N "$(get max_connections 100)")
+[[ $(get rfc1918_filter 0) == 1 ]] && args+=(-R)
+
+listen=$(get listen_http)
+[[ -n $listen ]] || { echo "uhttpd.main.listen_http 为空，请在 /etc/config/uhttpd 里设置监听地址" >&2; exit 1; }
+for a in $listen; do args+=(-p "$a"); done
+for p in $(get ucode_prefix); do args+=(-o "${p%%=*}" -O "${p#*=}"); done
+
+exec "$RT/bin/uhttpd" "${args[@]}"

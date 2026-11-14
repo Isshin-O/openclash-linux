@@ -1,0 +1,7 @@
+#!/bin/sh /etc/rc.common
+# openclash-linux：uhttpd 由 systemd 管（openclash-uhttpd.service），这里只把 OpenWrt 的命令转过去。
+# 上游 OpenClash 改完 uhttpd 配置会调 restart；请求可能就来自 uhttpd 自己，所以不等待（--no-block）。
+start() { systemctl start openclash-uhttpd.service; }
+stop() { systemctl stop --no-block openclash-uhttpd.service; }
+restart() { systemctl restart --no-block openclash-uhttpd.service; }
+reload() { restart; }

@@ -1,0 +1,11 @@
+
+config rpcd
+	option socket '/var/run/ubus/ubus.sock'
+	option timeout '30'
+
+# 与 OpenWrt 相同：$p$root 表示用系统 /etc/shadow 里 root 的密码校验
+config login
+	option username 'root'
+	option password '$p$root'
+	list read '*'
+	list write '*'

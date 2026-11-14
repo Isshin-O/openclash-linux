@@ -1,0 +1,27 @@
+# openclash-linux：fw4 在这台机器上只负责建出和 OpenWrt 一样的 table inet fw4（区域链、dstnat/mangle 等基础链），
+# 好让 OpenClash 把规则挂上去；所有策略都是放行，不替代发行版自己的防火墙（ufw/firewalld 照常工作）。
+# 不在任何区域里的网卡（docker0、tailscale0 等）走 defaults，也是放行。
+
+config defaults
+	option input		ACCEPT
+	option output		ACCEPT
+	option forward		ACCEPT
+
+config zone
+	option name		lan
+	list   network		'lan'
+	option input		ACCEPT
+	option output		ACCEPT
+	option forward		ACCEPT
+
+# 有第二张网卡时 openclash-boot 会生成 network.wan；单网卡旁路由时这个区域是空的
+config zone
+	option name		wan
+	list   network		'wan'
+	option input		ACCEPT
+	option output		ACCEPT
+	option forward		ACCEPT
+
+config forwarding
+	option src		lan
+	option dest		wan
