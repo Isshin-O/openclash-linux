@@ -234,7 +234,7 @@ nftables 里别的表丢弃的包，fw4 放行也没用，所以 `openclash-host
 - 启动 OpenClash、改 nft/路由的测试只在网络命名空间里做：全部 openclash-* 服务临时放进命名空间
   （`/run/systemd/system/openclash-.service.d/netns.conf` 写 `NetworkNamespacePath=/run/netns/<名字>`，`daemon-reload` 后再启动），
   另建客户端和「上游」命名空间；启动前确认每个单元的 `NetworkNamespacePath` 已生效。在 WSL（Ubuntu 26.04）里这样测过
-  全部页面和接口、写操作、更新、DNS 模式 1、6 种运行模式、kill -9 拉起、停止清理。
+  全部页面和接口、写操作、更新、DNS 模式 1 和 2 × 6 种运行模式、黑白名单、IPv6（4 种 IPv6 代理模式）、kill -9 拉起、停止清理。
 - 其他发行版用 `systemd-nspawn -b --private-network` 容器测（Debian 11、Fedora 44 + firewalld）：装、重复装、网页登录、
   插件经网页升级/坏包被拦/降级、卸载后整个文件系统和防火墙（含 firewalld 运行时/永久配置）与安装前逐条对比。
 - 实机：飞牛 fnOS（Debian 12 系）上用真实订阅测过 6 种运行模式（TCP 和 UDP 经节点）、只代理指定设备、本机流量不受影响。
@@ -251,6 +251,10 @@ nftables 里别的表丢弃的包，fw4 放行也没用，所以 `openclash-host
 3. procd 发现 `/sys/fs/cgroup` 可写会在宿主 cgroup 根下建 `services/` 子树，所以 openclash-procd 设了 `ProtectControlGroups=yes`，
    实例改为按 PID 管理（日志里每次启动实例有一行 `failed adding instance cgroup` 警告，属正常）。
 4. fw4 的状态文件 `/var/run/fw4.state` 存在时，`fw4 start` 会认为已加载而跳过；重启机器后 `/run` 清空，不受影响。
+5. 开机脚本和 OpenWrt 一样打开 IPv4、IPv6 转发（`net.ipv4.ip_forward`、`net.ipv6.conf.all.forwarding`）。IPv6 转发不开时，
+   IPv6 的 TUN/混合模式和不经内核的 IPv6 直通流量都不通（装了 Docker 的机器上 Docker 已经打开了）。开 IPv6 转发前把 `accept_ra=1`
+   的网卡改成 `2`，否则内核不再接受 RA，宿主自己的 IPv6 默认路由会到期消失；NetworkManager、systemd-networkd 管的网卡自己处理 RA，不受影响。
+   卸载不会把转发关回去。
 
 ## 已知问题
 

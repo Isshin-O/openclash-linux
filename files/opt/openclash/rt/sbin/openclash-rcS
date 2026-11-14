@@ -8,8 +8,14 @@ case $1 in
 esac
 # procd 连上 ubus 后才有 service 对象
 ubus -t 30 wait_for service || { echo "procd 没有就绪" >&2; exit 1; }
-# 旁路由/网关要转发（OpenWrt 开机时由 sysctl 脚本打开）
-[ "$1" = boot ] && sysctl -qw net.ipv4.ip_forward=1
+# 旁路由/网关要转发（OpenWrt 开机时由 sysctl 脚本打开）。IPv6 也要：IPv6 的 TUN 模式把局域网的包转给 utun、
+# 不经内核的直通流量（本地网段、绕过列表）都靠它。开了 IPv6 转发后，accept_ra=1 的网卡（内核自己收 RA，如 ifupdown）
+# 不再接受 RA，IPv6 默认路由到期就没了，先改成 2（转发时照样收）；NetworkManager、systemd-networkd 自己处理 RA（accept_ra=0），不受影响
+if [ "$1" = boot ]; then
+	sysctl -qw net.ipv4.ip_forward=1
+	for f in /proc/sys/net/ipv6/conf/*/accept_ra; do [ "$(cat $f 2>/dev/null)" = 1 ] && echo 2 >$f; done
+	sysctl -qw net.ipv6.conf.all.forwarding=1 2>/dev/null
+fi
 # 宿主防火墙（firewalld/ufw）放行局域网访问和转发，端口按当前配置
 [ "$1" = boot ] && /opt/openclash/rt/sbin/openclash-hostfw apply
 for s in /etc/rc.d/$p??*; do
