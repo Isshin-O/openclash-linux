@@ -301,6 +301,8 @@ openwrt_files() {
 	install -Dm755 "$O/base-files/files/etc/rc.common" "$STAGE/etc/rc.common"
 	install -Dm644 "$O/base-files/files/lib/functions.sh" "$STAGE/lib/functions.sh"
 	install -Dm644 -t "$STAGE/lib/functions" "$O"/base-files/files/lib/functions/*.sh "$O/system/procd/files/procd.sh"
+	# functions.sh 的 ipcalc 调它：dnsmasq 启动脚本开 DHCP 时用来算地址池（视图里在 /bin/ipcalc.sh，见 install.sh）
+	install -Dm755 "$O/base-files/files/bin/ipcalc.sh" "$S/bin/ipcalc.sh"
 	install -Dm644 "$O/system/uci/files/lib/config/uci.sh" "$STAGE/lib/config/uci.sh"
 	install -Dm644 "$S/share/libubox/jshn.sh" "$STAGE/usr/share/libubox/jshn.sh"
 	install -Dm755 "$O/utils/busybox/files/cron" "$V/etc/rc.d/init.d/cron"
@@ -309,17 +311,23 @@ openwrt_files() {
 		-exec install -Dm644 {} "$STAGE/{}" \;)
 	chmod 755 "$STAGE/sbin/fw4"
 	install -Dm755 "$SRC/firewall4/root/etc/init.d/firewall" "$V/etc/rc.d/init.d/firewall"
-	# dnsmasq 的启动脚本用原版，改三处（都带断言）：
+	# dnsmasq 的启动脚本用原版，改四处（都带断言）：
 	# 1. OpenWrt 装包时会建 dnsmasq 用户和组，各发行版不一定有 → 降权到哪儿都有的 nobody（组用它的主组）
 	# 2. boot 时原版不加 --interface（那时 netifd 还没把接口拉起来，之后靠接口事件 reload）；
 	#    我们的开机脚本在网络就绪后才跑，也没有接口事件，boot 直接按 start 处理
+	# 3. 原版没有 /etc/dnsmasq.<段名>.conf 时引入 /etc/dnsmasq.conf。普通 Linux 上那是发行版 dnsmasq 的配置
+	#    （Fedora 的写着 user=dnsmasq、conf-dir=/etc/dnsmasq.d 等），引进来和我们生成的选项重复，dnsmasq 起不来 → 不引入
+	# 4. 开 DHCP 前探测局域网里有没有别的 DHCP 服务器，原版只发 1 次 DISCOVER（udhcpc -t 1）。实测对方刚起来时
+	#    第一次常收不到 OFFER（WSL 命名空间里每轮必现），就会出现两个 DHCP 服务器 → 发 3 次（没有别的服务器时多等约 9 秒）
 	local D=$V/etc/rc.d/init.d/dnsmasq
 	install -Dm755 "$O/network/services/dnsmasq/files/dnsmasq.init" "$D"
 	sed -i -e 's|^\tchown dnsmasq:dnsmasq /var/run/dnsmasq$|\tchown nobody /var/run/dnsmasq # openclash-linux|' \
 		-e 's|^\t\txappend "--user=dnsmasq"$|\t\txappend "--user=nobody" # openclash-linux|' \
 		-e '/^\t\txappend "--group=dnsmasq"$/d' \
+		-e 's|^\t\tdnsmasqconffile=/etc/dnsmasq.conf$|\t\tdnsmasqconffile= # openclash-linux|' \
+		-e 's|^\tudhcpc -n -q -s /bin/true -t 1 -i "$ifname" >&- && rv=1 \|\| rv=0$|\tudhcpc -n -q -s /bin/true -t 3 -i "$ifname" >\&- \&\& rv=1 \|\| rv=0 # openclash-linux|' \
 		-e '/^boot()$/,/^}$/ s|^\tBOOT=1$|\t: # openclash-linux|' "$D"
-	[[ $(grep -c 'openclash-linux' "$D") == 3 ]] && ! grep -q -e '--group=dnsmasq' -e 'BOOT=1' "$D" || die "dnsmasq 启动脚本补丁没打上（脚本变了？）"
+	[[ $(grep -c 'openclash-linux' "$D") == 5 ]] && ! grep -q -e '--group=dnsmasq' -e 'BOOT=1' -e '=/etc/dnsmasq.conf' -e 'udhcpc .* -t 1 ' "$D" || die "dnsmasq 启动脚本补丁没打上（脚本变了？）"
 	install -Dm644 "$O/network/services/dnsmasq/files/rfc6761.conf" "$STAGE/usr/share/dnsmasq/rfc6761.conf"
 	# 相当于 rc.common enable（OpenWrt 装包时做）：开机按序号启动 dnsmasq、fw4、cron
 	mkdir -p "$V/etc/rc.d" "$STAGE/etc/crontabs"
@@ -329,18 +337,21 @@ openwrt_files() {
 }
 
 # dnsmasq：DNS 劫持模式 1（上游默认）用它转发到内核，「大陆绕过例外列表」靠它的 nftset 往 fw4 的集合里加地址。
-# 版本和补丁同 OpenWrt 的 dnsmasq-full，但不编 DHCP/TFTP：旁路由盒子上不能冒出第二个 DHCP 服务器
-# （即使把路由器的 /etc/config/dhcp 整个拷过来，启动脚本也会按编译特性丢掉 dhcp-* 选项）
+# 版本和补丁同 OpenWrt 的 dnsmasq-full。编进 DHCP（只有 IPv4）但默认配置里没有 dhcp 段，不分配地址：
+# 旁路由盒子上不能冒出第二个 DHCP 服务器，要当主路由时自己在 /etc/config/dhcp 加。
+# 不编 DHCPv6：编了启动脚本会加 --enable-ra，开了 DHCP 以后盒子会发 IPv6 路由通告；也不编 TFTP、认证 DNS
 build_dnsmasq() {
-	done_ build-dnsmasq && return
+	local want='Compile time options:.* DHCP no-DHCPv6 .* nftset '
+	# 编译选项改过（旧版是 no-DHCP）就重编
+	done_ build-dnsmasq && LD_LIBRARY_PATH=$S/lib "$S/sbin/dnsmasq" --version | grep -q "$want" && return
 	echo ">>> 编译 dnsmasq"
 	local b=$BLD/dnsmasq
 	rm -rf "$b" && cp -a "$SRC/dnsmasq" "$b"
 	make -C "$b" -j"$JOBS" CC=gcc "CFLAGS=$CFLAGS" "LDFLAGS=$LDFLAGS -Wl,-rpath,$PREFIX/lib" \
-		COPTS="-DHAVE_UBUS -DHAVE_NFTSET -DNO_DHCP -DNO_TFTP -DNO_AUTH -DNO_IPSET -DNO_ID" \
+		COPTS="-DHAVE_UBUS -DHAVE_NFTSET -DNO_DHCP6 -DNO_TFTP -DNO_AUTH -DNO_IPSET -DNO_ID" \
 		>"$BLD/dnsmasq.log" 2>&1 || die "dnsmasq 编译失败，见 $BLD/dnsmasq.log"
 	install -Dm755 "$b/src/dnsmasq" "$S/sbin/dnsmasq"
-	LD_LIBRARY_PATH=$S/lib "$b/src/dnsmasq" --version | grep -q 'Compile time options:.* no-DHCP .* nftset ' || die "dnsmasq 编译特性不对（要 no-DHCP、nftset）"
+	LD_LIBRARY_PATH=$S/lib "$b/src/dnsmasq" --version | grep -q "$want" || die "dnsmasq 编译特性不对（要 DHCP、no-DHCPv6、nftset）"
 	mark build-dnsmasq
 }
 

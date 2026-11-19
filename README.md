@@ -119,7 +119,7 @@ Lua、ruby、json-c、libcrypt、libyaml 都自带，不用装。缺命令时安
 | libxcrypt 4.4.36（rpcd 校验 `/etc/shadow`） | github.com/besser82/libxcrypt | sha256 `e5e1f4ca…d8943` |
 | libyaml 0.2.5 | pyyaml.org | sha256 `c642ae9b…78ef4` |
 | ruby 3.3.10（上游 YAML.rb/uci.rb 用；不带 rubygems） | ruby-lang.org | sha256 `b555baa4…0e928` |
-| dnsmasq 2.93（打 OpenWrt 的 2 个补丁；带 nftset、ubus，不编 DHCP/TFTP/认证 DNS） | thekelleys.org.uk | sha256 `0c00d4e5…2bc19` |
+| dnsmasq 2.93（打 OpenWrt 的 2 个补丁；带 nftset、ubus、DHCP（仅 IPv4），不编 DHCPv6/TFTP/认证 DNS） | thekelleys.org.uk | sha256 `0c00d4e5…2bc19` |
 | libmnl 1.0.5（dnsmasq 的 nftset 用） | netfilter.org | sha256 `274b9b91…d0525` |
 | libnftnl 1.3.1（**比 OpenWrt 24.10.8 的 1.2.8 新**，见下） | netfilter.org | sha256 `607da28d…ffba8` |
 | nftables 1.1.6（只用库 libnftables；**比 OpenWrt 24.10.8 的 1.1.1 新**，见下） | netfilter.org | sha256 `372931bd…2530c` |
@@ -144,8 +144,10 @@ ucode 1 个、uhttpd 17 个（多为安全修复）、rpcd 11 个、jsonfilter 1
 | 全部 C 组件 | 强制包含一个只声明 `vasprintf` 的头文件 | ucode 用 `vasprintf`，glibc 2.31 只在 `_GNU_SOURCE` 下声明，各项目对 `_GNU_SOURCE` 的定义互相冲突 |
 | LuCI dispatcher.uc | ubus 连接从模块顶层挪到 `dispatch()` 开头 | uhttpd 在父进程加载调度器，fork 出的请求子进程共用一条连接，带会话的并发请求会互相读走回复而挂住（WSL 实测 6/6 挂；改后 8/8 在 0.03 秒内返回） |
 | busybox | 关掉 top 的 CPU 列和小数 | 和 OpenWrt 一致，LuCI 进程页按这个格式解析 |
-| dnsmasq | 编译时去掉 DHCP、TFTP、认证 DNS、ipset | 旁路由盒子上不能冒出第二个 DHCP 服务器；即使把路由器的 `/etc/config/dhcp` 整个拷过来，启动脚本也会按编译特性丢掉 `dhcp-*` 选项 |
+| dnsmasq | 编译时去掉 DHCPv6、TFTP、认证 DNS、ipset（DHCP 只有 IPv4） | 编了 DHCPv6，启动脚本会加 `--enable-ra`，开 DHCP 后盒子会发 IPv6 路由通告；ipset 换成 nftset |
 | dnsmasq 启动脚本 | 降权用户从 `dnsmasq` 改成 `nobody`，去掉 `--group=dnsmasq` | OpenWrt 装包时会建 dnsmasq 用户和组，各发行版不一定有；不往宿主加账号 |
+| dnsmasq 启动脚本 | 不再引入 `/etc/dnsmasq.conf` | 普通 Linux 上那是发行版 dnsmasq 的配置（Fedora 的写着 `user=dnsmasq`、`conf-dir=/etc/dnsmasq.d` 等），引进来和生成的选项重复，dnsmasq 起不来；`/etc/dnsmasq.<段名>.conf` 照旧引入 |
+| dnsmasq 启动脚本 | 开 DHCP 前探测别的 DHCP 服务器时发 3 次 DISCOVER（原版 1 次） | 对方刚起来时第一次常收不到 OFFER（WSL 命名空间里每轮必现），会出现两个 DHCP 服务器；代价是开了 DHCP 又没有别的服务器时，dnsmasq 每次启动多等约 9 秒 |
 | dnsmasq 启动脚本 | `boot` 不再设 `BOOT=1` | 原版开机时不加 `--interface`（那时 netifd 还没把接口拉起来，之后靠接口事件 reload）；我们的开机脚本在网络就绪后才跑，也没有接口事件 |
 | nftables | 4 处 `case` 标签后补一个空语句 | 标签后直接跟声明 gcc 11 起才接受，Debian 11 是 gcc 10 |
 
@@ -211,7 +213,9 @@ sudo /opt/openclash/rt/sbin/openclash-uninstall
   里的真实服务器，否则取 `/etc/resolv.conf`，回环地址一律跳过。
 - **53 端口被占用时**：首次安装发现 53 已被别的程序占用（监听全部地址、`127.0.0.1` 或局域网地址）就把 dnsmasq 改到 5335 端口
   （`/etc/config/dhcp` 的 `port`）。OpenClash 运行时不受影响（劫持规则按这个端口重定向），只是它停着时盒子的 53 端口没人应答。
-- **没有 DHCP**：见上面改动表。局域网的地址分配仍由主路由负责；要让设备走盒子，在主路由的 DHCP 里把网关（和 DNS）指向盒子，或在设备上手动设置。
+- **DHCP 默认关闭**：dnsmasq 编进了 DHCP（只有 IPv4），但默认配置里没有 `config dhcp` 段，不分配地址——局域网里只能有一个 DHCP 服务器。
+  旁路由用法：在主路由的 DHCP 里把网关（和 DNS）指向盒子，或在设备上手动设置。要让盒子自己分配地址（当主路由用），
+  照 `/etc/config/dhcp` 开头注释里的写法加一段，重启 dnsmasq，并在宿主防火墙放行 UDP 67；之后 OpenClash 设备列表里能显示设备名（来自 DHCP 租约）。
 - dnsmasq 以 `nobody` 运行，`ubus` 选项关闭（OpenWrt 上是给 DHCP 事件用的）。
 
 不想用 dnsmasq 可以在「插件设置 → DNS 设置 → 本机 DNS 劫持」改成「防火墙转发」（模式 2），局域网的 DNS 请求直接重定向到内核。
@@ -254,7 +258,8 @@ nftables 里别的表丢弃的包，fw4 放行也没用，所以 `openclash-host
 5. 开机脚本和 OpenWrt 一样打开 IPv4、IPv6 转发（`net.ipv4.ip_forward`、`net.ipv6.conf.all.forwarding`）。IPv6 转发不开时，
    IPv6 的 TUN/混合模式和不经内核的 IPv6 直通流量都不通（装了 Docker 的机器上 Docker 已经打开了）。开 IPv6 转发前把 `accept_ra=1`
    的网卡改成 `2`，否则内核不再接受 RA，宿主自己的 IPv6 默认路由会到期消失；NetworkManager、systemd-networkd 管的网卡自己处理 RA，不受影响。
-   卸载不会把转发关回去。
+   首次安装时记下转发的原值（`/opt/openclash/rt/.sysctl`，开机脚本改过的 accept_ra 也记在这里），卸载时改回去；Docker 在跑时不关转发。
+   从 0.48.011-2 及更早版本升级上来的，记下的是升级时的值（那时转发已经开着）。
 
 ## 已知问题
 

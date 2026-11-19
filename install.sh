@@ -81,6 +81,13 @@ while read -r f; do
 done < <(cd "$HERE/files" && find usr www opt -type f)
 install -m755 "$HERE/uninstall.sh" "$RT/sbin/openclash-uninstall"
 list+=$'\n'$RT/sbin/openclash-uninstall
+# 开机脚本会打开 IPv4/IPv6 转发：首次安装时记下原值，卸载时改回去（开机脚本改过的 accept_ra 也记在这里）。
+# ponytail: 从没有这个文件的旧版本升级上来时，记下的是升级时的值（旧版开机脚本已经打开了转发）
+if [[ ! -f $RT/.sysctl ]]; then
+	for p in /proc/sys/net/ipv4/ip_forward /proc/sys/net/ipv6/conf/all/forwarding; do
+		if [[ -e $p ]]; then echo "$p $(<"$p")"; fi
+	done >"$RT/.sysctl"
+fi
 
 # OpenWrt 视图：上游脚本写死的这些路径，宿主上没有就直接装（符号链接）；宿主上已有同名的（如 /bin/sh 是 dash、
 # /etc/init.d 是发行版的），只在 openclash-* 服务的挂载命名空间里换掉，宿主不受影响
@@ -91,6 +98,10 @@ VIEW=(
 	/usr/sbin/dnsmasq=$RT/sbin/dnsmasq
 	# 上游按 busybox 的输出格式解析（ifconfig | grep "inet6 addr"），net-tools 的格式不一样
 	/sbin/ifconfig=$RT/bin/busybox
+	# dnsmasq 启动脚本开 DHCP 前用 udhcpc 探测局域网里是否已有 DHCP 服务器，有就不开；找不到这个命令会被当成「没有」
+	/sbin/udhcpc=$RT/bin/busybox
+	# 同上，开 DHCP 时算地址池（OpenWrt 的 ipcalc.sh；网页触发的重启只按 /sbin:/usr/sbin:/bin:/usr/bin 找命令）
+	/bin/ipcalc.sh=$RT/bin/ipcalc.sh
 	# 上游用 crontab 通知 crond；宿主的 crontab 和 /var/spool/cron/crontabs 属于发行版的 cron，视图里换成 busybox 的
 	/usr/bin/crontab=$RT/bin/busybox
 	/var/spool/cron/crontabs=/etc/crontabs

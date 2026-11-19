@@ -1,5 +1,12 @@
 # openclash-linux：只用 dnsmasq 做 DNS 转发（OpenClash 的「本机 DNS 劫持」模式 1），选项和 OpenWrt 默认配置一致。
-# 这里的 dnsmasq 编译时去掉了 DHCP：局域网的地址分配仍由主路由负责，config dhcp 一类的段写了也不起作用。
+# dnsmasq 编进了 DHCP（只有 IPv4），但这里没有 config dhcp 段，所以不分配地址：局域网里只能有一个 DHCP 服务器，旁路由别开。
+# 要让盒子分配地址（比如当主路由用），照 OpenWrt 的写法加一段，改完 sudo /opt/openclash/rt/sbin/openclash-run /etc/init.d/dnsmasq restart，
+# 并在宿主防火墙放行 UDP 67：
+#   config dhcp 'lan'
+#   	option interface 'lan'
+#   	option start '100'
+#   	option limit '150'
+#   	option leasetime '12h'
 
 config dnsmasq
 	option domainneeded '1'

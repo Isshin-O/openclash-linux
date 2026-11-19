@@ -22,6 +22,14 @@ for u in openclash-rc openclash-uhttpd openclash-procd openclash-rpcd openclash-
 done
 # 撤销对宿主防火墙（firewalld/ufw）的放行
 [[ -x $RT/sbin/openclash-hostfw ]] && "$RT/sbin/openclash-hostfw" remove
+# 转发和 accept_ra 改回安装前的值（install.sh、开机脚本记的）；Docker 在跑时不关转发，它的容器网络要用
+if [[ -f $RT/.sysctl ]]; then
+	while read -r p v; do
+		[[ $p == */accept_ra ]] || ! systemctl is-active -q docker || continue
+		if [[ -w $p ]]; then echo "$v" >"$p"; fi
+	done <"$RT/.sysctl"
+	rm -f "$RT/.sysctl"
+fi
 # fw4 没有关机脚本，它建的 table inet fw4（全放行）在这里删掉
 nft delete table inet fw4 2>/dev/null || true
 rm -f /var/run/fw4.state /var/run/fw4.lock
