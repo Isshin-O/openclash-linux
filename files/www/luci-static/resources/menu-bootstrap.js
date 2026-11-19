@@ -3,6 +3,7 @@
 'require ui';
 
 // openclash-linux：替换 luci-theme-bootstrap 的同名文件（页头菜单由它渲染）。
+// 改自 LuCI（https://github.com/openwrt/luci）luci-theme-bootstrap 的 menu-bootstrap.js，本文件沿用 LuCI 的 Apache-2.0 许可。
 // 不渲染顶层分类（状态/系统/服务/网络）和页脚的模式菜单；
 // OpenClash 的子菜单（上游 6 页 + 3 个系统页）始终横排成页签，页头右侧只留「退出」。
 const BASE = 'admin/services/openclash';

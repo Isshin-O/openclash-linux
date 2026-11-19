@@ -269,3 +269,25 @@ nftables 里别的表丢弃的包，fw4 放行也没用，所以 `openclash-host
 9. 宿主自己的域名解析不经过 dnsmasq（`/etc/resolv.conf` 没改）：宿主自己发出的流量按 IP 规则分流，域名规则对它不起作用。
    路由器上「路由器自身」的请求是走 dnsmasq → 内核的。
 10. 卸载后 `/tmp` 下运行时生成的文件（`/tmp/etc`、`/tmp/dnsmasq.*.d`、`/tmp/resolv.conf*`、`/tmp/hosts` 等）留到下次重启才消失。
+
+## 许可证
+
+本仓库的脚本和代码（`build.sh`、`install.sh`、`files/` 等）以 GPL-2.0（仅第 2 版，和 OpenWrt 一样）发布，全文见 [LICENSE](LICENSE)。
+例外：`files/www/luci-static/resources/menu-bootstrap.js` 改自 LuCI 主题 luci-theme-bootstrap 的同名文件，沿用 LuCI 的 Apache-2.0。
+
+安装包里打进去的上游组件都没改许可，各自沿用原来的许可证：
+
+| 组件 | 许可证 |
+|---|---|
+| OpenWrt 的系统脚本（rc.common、functions.sh、procd.sh 等）、procd、opkg、udebug、busybox、dnsmasq、nftables | GPL-2.0 |
+| libnftnl | GPL-2.0-or-later |
+| ubus、uci、libnl-tiny | LGPL-2.1 |
+| libmnl、libxcrypt | LGPL-2.1-or-later |
+| libubox、rpcd、uhttpd、ucode、jsonfilter（jsonpath）、cgi-io、firewall4 | ISC |
+| LuCI | Apache-2.0 |
+| luci-app-openclash（上游 OpenClash） | MIT |
+| Lua 5.1、json-c、libyaml、lucihttp | MIT |
+| ruby | Ruby 许可或 BSD-2-Clause |
+
+每个 Release 都附带 `openclash-linux-<版本>-sources.tar.xz`：安装包里这些组件编译用的全部源码和 OpenWrt 的补丁。
+mihomo 内核（GPL-3.0）不在安装包里，由 OpenClash 自己下载。
