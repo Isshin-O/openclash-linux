@@ -25,13 +25,121 @@ curl -fsSL https://github.com/Isshin-O/openclash-linux/releases/latest/download/
 安装完成后，按提示用浏览器打开 `http://<本机局域网 IP>/`，用 root 或执行 sudo 的账号登录（密码就是该账号的系统密码），
 之后的用法和路由器上的 OpenClash 相同。把家里设备的网关和 DNS 指向这台机器，流量就会走代理。
 
-- 安装参数接在 `sh -s --` 后面，例如 `... | sudo sh -s -- --listen 0.0.0.0:8080`（参数见「安装 / 卸载」）
-- 国内直连 GitHub 不通时，给下载地址加代理前缀（两处都要加）：
+- 安装参数接在 `sh -s --` 后面，例如 `... | sudo sh -s -- --listen 0.0.0.0:8080`（全部参数见「安装 / 卸载」）
+- 国内直连 GitHub 不通时，给下载地址加上代理前缀（两处都要加）：
   `curl -fsSL https://gh-proxy.com/https://github.com/Isshin-O/openclash-linux/releases/latest/download/get.sh | sudo OC_MIRROR=https://gh-proxy.com/ sh`
-- 只下载、校验，不安装：`... | sh -s -- --download-only`（安装包存到当前目录，之后 `sudo sh openclash-linux-*.run`）
+- 只下载并校验、不安装：`... | sh -s -- --download-only`（安装包保存到当前目录，之后执行 `sudo sh openclash-linux-*.run`）
 - 卸载：`sudo /opt/openclash/rt/sbin/openclash-uninstall`
 - 要求：systemd、glibc ≥ 2.31、x86_64，以及 bash curl unzip nft ip ss nsenter flock ps（缺少时安装脚本会给出安装命令）。
   安装前先停掉本机其他 Clash/mihomo 服务，否则端口会冲突。
+
+## 安装 / 卸载
+
+```sh
+sudo sh openclash-linux-0.48.011-x86_64.run                         # 首次安装：监听 <LAN IP>:80，装 ipk，运行开机脚本
+sudo sh openclash-linux-0.48.011-x86_64.run --listen 0.0.0.0:8080   # 指定监听地址（80 被占用时用这个）
+sudo sh openclash-linux-0.48.011-x86_64.run --no-boot               # 只起网页栈和 procd，不启动 fw4/cron/OpenClash（调试用）
+sudo sh openclash-linux-0.48.011-x86_64.run --login-user alice      # 网页另外允许系统用户 alice 用自己的密码登录（默认是执行 sudo 的用户）
+sudo /opt/openclash/rt/sbin/openclash-uninstall
+```
+
+升级时直接运行新版本的安装包即可，配置会保留。安装包解压后实际执行的是本仓库的 `install.sh --ipk <ipk> <运行时包>`。
+
+只升级 OpenClash 插件不用重装：网页「检查更新」里的插件更新和「历史版本」降级都和路由器上一样，走上游的
+`openclash_update.sh`（下载 ipk → `opkg --noaction` 预检 → 由 procd 启动一个更新服务执行 `opkg install`）。
+预检不通过（包损坏、依赖不满足）时直接退出，旧版不受影响；配置和 `/etc/openclash` 里的文件会保留。上游没有自动回滚，
+装坏了就从「历史版本」装回旧版。以上在容器里实测过：升级、坏包被拦截、降级回原版（见下文「测试」）。
+
+- 「本机 DNS 劫持」的默认值和上游一样，是 **dnsmasq 转发**（模式 1），见下文「DNS 劫持」。从旧版本升级的保留原设置（旧版本首次安装时设为模式 2）。
+- `/etc/config/network` 由 openclash-boot 首次启动时按网卡生成：只有一张网卡时它就是 `lan`；有两张网卡时，默认路由所在的那张是 `wan`，另一张是 `lan`。
+  之后每次启动只刷新各接口的 `ipaddr`。改了接口后要执行 `sudo systemctl restart openclash-rpcd`。
+- 已有的 `/etc/config/*` 不会被覆盖。安装清单在 `/opt/openclash/rt/.manifest`，重装时会删掉上次装了、这次没有的文件。
+  清单里以 `/` 结尾的条目是目录：卸载和升级清理时，目录只在变空后才 `rmdir`，绝不当作文件删除
+  （运行时包里有 `/lib`、`/sbin`，在合并 /usr 的发行版上它们是指向 `usr/` 的符号链接，删掉后系统无法启动）；根目录下的条目一律不删。
+- 和 OpenWrt 一样，登录用系统 root 密码（rpcd `$p$root`，校验 `/etc/shadow`）。install.sh 还会额外允许一个系统用户登录（默认是执行 sudo 的用户，可用 `--login-user` 指定），密码就是该用户自己的系统密码。
+  这是因为 Ubuntu 默认锁定 root，NAS 之类系统的 root 密码在装机时设定，用户并不知道（飞牛 NAS 实测）。这个用户在网页上拥有全部权限，等同 root。
+- 卸载会执行上游的 postrm，删除 `/etc/openclash` 和 `/etc/config/openclash`，和在 OpenWrt 上卸载一样。
+
+## 依赖
+
+运行机：systemd、glibc ≥ 2.31、内核 ≥ 5.2（`/bin/sh` 是 bash 时要用新挂载 API），以及命令 bash、curl、unzip、nft、ip、ss、nsenter、flock、ps。
+Lua、ruby、json-c、libcrypt、libyaml 都已自带，不用另装。缺少命令时，安装包会按包管理器给出安装命令：
+
+| 包管理器 | 命令 |
+|---|---|
+| apt | `sudo apt install curl unzip nftables iproute2 util-linux procps` |
+| dnf | `sudo dnf install curl unzip nftables iproute util-linux procps-ng` |
+| pacman | `sudo pacman -S curl unzip nftables iproute2 util-linux procps-ng` |
+| zypper | `sudo zypper install curl unzip nftables iproute2 util-linux procps` |
+
+`ps` 必须由 procps 提供（见「注意」）。编译所需的工具见「编译、打包」。
+
+## DNS 劫持（模式 1：dnsmasq 转发）
+
+和路由器上一样：dnsmasq 由 OpenWrt 原版启动脚本按 `/etc/config/dhcp` 生成配置，交给 procd 托管。OpenClash 启动时把 dnsmasq 的上游改成
+内核的 DNS 端口（`127.0.0.1#7874`），并在 fw4 里把局域网发往任意地址 53 端口的请求重定向到 dnsmasq；停止时还原。
+「指定 DNS 服务器」和「大陆绕过例外列表」这两个只在模式 1 下出现的选项，靠 dnsmasq 的 `server=` 和 `nftset=` 实现
+（例外域名解析出的地址由 dnsmasq 写进 fw4 的 `china_ip_route_pass` 集合）。
+
+和路由器不同的地方：
+
+- **不占用 systemd-resolved 的地址**：dnsmasq 只监听局域网网卡的地址和 `127.0.0.1`（`interface 'lan'` + `nonwildcard`），
+  不碰 `127.0.0.53`、`127.0.0.54` 以及 Docker、隧道等网卡的地址。宿主的 `/etc/resolv.conf` 不改，宿主照旧使用原来的 DNS。
+- **上游 DNS**：OpenClash 停止时，dnsmasq 把请求转发给本机实际使用的 DNS 服务器。`openclash-boot` 每次启动时把它们写进
+  `/tmp/resolv.conf.d/resolv.conf.auto`（OpenWrt 上由 netifd 写）：有 systemd-resolved 时取 `/run/systemd/resolve/resolv.conf`
+  里的真实服务器，否则取 `/etc/resolv.conf`，回环地址一律跳过。
+- **53 端口被占用时**：首次安装时如果发现 53 端口已被其他程序占用（监听全部地址、`127.0.0.1` 或局域网地址），就把 dnsmasq 改到 5335 端口
+  （`/etc/config/dhcp` 的 `port`）。OpenClash 运行时不受影响（劫持规则按这个端口重定向），只是 OpenClash 停止时，盒子的 53 端口没有程序应答。
+- **DHCP 默认关闭**：dnsmasq 编进了 DHCP（仅 IPv4），但默认配置里没有 `config dhcp` 段，不会分配地址，因为局域网里只能有一个 DHCP 服务器。
+  作旁路由时，在主路由的 DHCP 设置里把网关（和 DNS）指向盒子，或者在设备上手动设置。要让盒子自己分配地址（当主路由用），
+  按 `/etc/config/dhcp` 开头注释里的写法加一段配置，重启 dnsmasq，并在宿主防火墙放行 UDP 67；之后 OpenClash 的设备列表里就能显示设备名（来自 DHCP 租约）。
+- dnsmasq 以 `nobody` 身份运行，关闭了 `ubus` 选项（OpenWrt 上它用于 DHCP 事件）。
+
+不想用 dnsmasq，可以在「插件设置 → DNS 设置 → 本机 DNS 劫持」里改成「防火墙转发」（模式 2），局域网的 DNS 请求会直接重定向到内核。
+
+## 宿主防火墙
+
+nftables 里其他表丢弃的包，fw4 放行了也没用，所以 `openclash-hostfw` 直接修改宿主自己的防火墙（install.sh 和每次开机脚本都会调用，卸载时撤销）：
+
+- **firewalld**：在局域网网卡所在的区域（网卡没有绑定区域时用默认区域，并把网卡加进去）放行网页端口、53 端口（以及 dnsmasq 改用的端口）
+  和 OpenClash 的各个端口（tcp+udp），开启区域内转发（`forward`），并把 `utun` 加进同一区域。**只添加区域里原来没有的项**：
+  已在某个端口范围内的端口不再单独添加（firewalld 往范围里加单个端口会把范围拆开，撤销后范围里就少了这个端口）；
+  区域原本就开着的 `forward` 不会在卸载时被关掉。运行时配置和永久配置都会修改。
+- **ufw**：在局域网网卡上放行这些端口，允许局域网网卡和 `utun` 的转发。
+- **Docker**：Docker 会把 iptables `FORWARD` 链的默认策略设为 DROP，旁路由转发的包会被丢弃。这里只在 Docker 留给用户的 `DOCKER-USER` 链里
+  放行局域网网卡 ↔ 同一网卡、局域网网卡 ↔ `utun` 的流量，不放行到容器网段。
+
+所有改动都以撤销命令的形式记录在 `/opt/openclash/rt/.hostfw`。
+
+## 注意
+
+1. **OpenWrt 视图（见「怎么跑起来的」）里的 `ps` 必须是 procps 的，不能换成 busybox 的。** 上游网页的启停接口会执行
+   `ps | grep -E 'openclash|clash|mihomo' | awk '{print $1}' | xargs kill -9`。procps 的 `ps -efw` 第一列是用户名，这条命令实际杀不到任何进程；
+   busybox `ps` 的第一列是 PID，会把 `/opt/openclash/rt` 下的网页栈和本机其他 mihomo 服务一起杀掉。
+2. `/etc/rc.d`、`/etc/openwrt_release`、`/sbin/uci` 等 OpenWrt 路径会出现在宿主上（宿主上没有时创建的符号链接或文件），都记在安装清单里，卸载时删除。
+3. procd 发现 `/sys/fs/cgroup` 可写时，会在宿主 cgroup 根下建 `services/` 子树，所以 openclash-procd 设置了 `ProtectControlGroups=yes`，
+   实例改为按 PID 管理（日志里每次启动实例都会有一行 `failed adding instance cgroup` 警告，属正常现象）。
+4. fw4 的状态文件 `/var/run/fw4.state` 存在时，`fw4 start` 会认为规则已加载而跳过；重启机器后 `/run` 会被清空，不受影响。
+5. 开机脚本和 OpenWrt 一样会打开 IPv4、IPv6 转发（`net.ipv4.ip_forward`、`net.ipv6.conf.all.forwarding`）。不开 IPv6 转发时，
+   IPv6 的 TUN/混合模式以及不经过内核的 IPv6 直通流量都不通（装了 Docker 的机器上，Docker 已经打开过）。打开 IPv6 转发前，开机脚本会先把
+   `accept_ra=1` 的网卡改成 `2`，否则内核不再接受 RA，宿主自己的 IPv6 默认路由会到期消失；由 NetworkManager、systemd-networkd 管理的网卡
+   自己处理 RA，不受影响。
+   首次安装时会记下转发的原值（`/opt/openclash/rt/.sysctl`，开机脚本改过的 accept_ra 也记在这里），卸载时改回去；如果 Docker 正在运行，则不关闭转发。
+   从 0.48.011-2 及更早版本升级的，记下的是升级时的值（那时转发已经打开）。
+
+## 已知问题
+
+1. SELinux（Fedora 默认 Enforcing）还没有在实机上验证，容器里测不了。
+2. 没有编译 TLS，网页只提供 HTTP（原设计如此）。
+3. `/etc/config/*` 被 uci 改写后，模板里的注释会丢失。
+4. 系统状态页没有网络/DHCP/无线信息块（需要 `luci-rpc`）；浏览器控制台里，登录页会报一条 `uci/get Access denied`（来自匿名会话，OpenWrt 上也有）。
+5. 系统日志只读取 journald 最近 1000 条，需要更多时修改 `syslog-wrapper` 里的 `-n`。
+6. 服务刚重启后立即登录，偶尔会返回登录页（rpcd 还没就绪），再登录一次即可。
+7. 没有编译 ubox 的 `validate_data`：cron 启动脚本做参数校验时会打印一行 `/sbin/validate_data: not found`，不影响运行。
+8. 没有 `brctl`：上游读取网络信息时会打印 `brctl: not found`，不影响结果。
+9. 宿主自身的域名解析不经过 dnsmasq（`/etc/resolv.conf` 没有改）：宿主自己发出的流量只按 IP 规则分流，域名规则对它不起作用。
+   路由器上「路由器自身」的请求是经 dnsmasq 转给内核的。
+10. 卸载后，`/tmp` 下运行时生成的文件（`/tmp/etc`、`/tmp/dnsmasq.*.d`、`/tmp/resolv.conf*`、`/tmp/hosts` 等）要到下次重启才会消失。
 
 ## 怎么跑起来的
 
@@ -65,43 +173,28 @@ sudo /opt/openclash/rt/sbin/openclash-run opkg status luci-app-openclash
 
 | 文件 | 作用 |
 |---|---|
-| `release.sh` | 出安装包：建 Debian 11 chroot，在里面跑 `build.sh`、`pack-openclash.sh`，打成自解压的 `.run` |
-| `build.sh` | 下载锁定版本的源码，打 OpenWrt 自己的包补丁，编译，打包成 `~/build/openclash-linux/openclash-rt-<arch>.tar.gz` |
-| `pack-openclash.sh` | 从上游源码打出 `luci-app-openclash_<版本>_all.ipk`（让 make 直接执行上游 Makefile，再用 OpenWrt 的 ipkg-build） |
-| `install.sh` | 安装运行时包、视图、配置、systemd 单元，用 opkg 装 ipk，放行宿主防火墙，启动 |
-| `uninstall.sh` | `opkg remove` 上游包，停服务，撤销防火墙放行，按安装清单删除全部安装内容（装好后在 `/opt/openclash/rt/sbin/openclash-uninstall`） |
-| `files/systemd/*.service` | 上面 5 个单元 |
-| `files/opt/openclash/rt/sbin/openclash-{boot,rcS,run,uhttpd}` | 开机准备、rc.d 启停、进入视图执行命令、按 `/etc/config/uhttpd` 拼 uhttpd 命令行 |
+| `get.sh` | 一键安装脚本：从 GitHub Releases 下载最新的安装包，校验 sha256 后运行 |
+| `release.sh` | 出安装包：建 Debian 11 chroot，在里面运行 `build.sh`、`pack-openclash.sh`，再打成自解压的 `.run` |
+| `build.sh` | 下载锁定版本的源码，打上 OpenWrt 自己的包补丁，编译后打包成 `~/build/openclash-linux/openclash-rt-<arch>.tar.gz` |
+| `pack-openclash.sh` | 从上游源码打出 `luci-app-openclash_<版本>_all.ipk`（让 make 直接执行上游 Makefile，再用 OpenWrt 的 ipkg-build 打包） |
+| `install.sh` | 安装运行时包、视图、配置和 systemd 单元，用 opkg 安装 ipk，放行宿主防火墙，然后启动 |
+| `uninstall.sh` | `opkg remove` 上游包，停止服务，撤销防火墙放行，按安装清单删除全部安装内容（安装后位于 `/opt/openclash/rt/sbin/openclash-uninstall`） |
+| `files/systemd/*.service` | 「怎么跑起来的」里的 5 个单元 |
+| `files/opt/openclash/rt/sbin/openclash-{boot,rcS,run,uhttpd}` | 开机准备、rc.d 启停、进入视图执行命令、按 `/etc/config/uhttpd` 拼出 uhttpd 命令行 |
 | `files/opt/openclash/rt/sbin/openclash-hostfw` | 放行宿主防火墙（firewalld/ufw）和 Docker 的 `DOCKER-USER` 链，见「宿主防火墙」 |
-| `files/openclash-view.c` | 见上面 `/bin/sh` 的说明（`build.sh` 编译进运行时包） |
-| `files/opt/openclash/root/etc/init.d/uhttpd` | 视图里的 `/etc/init.d/uhttpd`：转给 systemd（上游改完 uhttpd 配置会 restart 它） |
-| `files/usr/share/rpcd/ucode/openclash-network` | ubus `network.interface*`（netifd 的替身），fw4 和上游 `openclash_get_network.lua` 用 |
-| `files/etc/config/{uhttpd,rpcd,luci,firewall,system,dhcp}` | 初始 UCI 配置（目标不存在时才装）；firewall 全放行，只为建出 `table inet fw4`；dhcp 只有 dnsmasq 的 DNS 部分，见「DNS 劫持」 |
-| `files/usr/share/luci/menu.d/openclash-linux.json` | 唯一的菜单定义：3 个系统页挂在 `admin/services/openclash/sys-*` |
-| `files/www/luci-static/resources/menu-bootstrap.js` | 替换主题页头菜单：不显示顶层分类，OpenClash 子菜单横排成页签，右上角只留「退出」 |
-| `files/usr/libexec/syslog-wrapper` | 系统日志页：读 journald，按 OpenWrt `logread` 格式输出 |
+| `files/openclash-view.c` | 见上文 `/bin/sh` 的说明（由 `build.sh` 编译进运行时包） |
+| `files/opt/openclash/root/etc/rc.d/init.d/uhttpd` | 视图里的 `/etc/init.d/uhttpd`：把命令转给 systemd（上游改完 uhttpd 配置会 restart 它） |
+| `files/usr/share/rpcd/ucode/openclash-network` | ubus `network.interface*`（netifd 的替身），供 fw4 和上游 `openclash_get_network.lua` 使用 |
+| `files/etc/config/{uhttpd,rpcd,luci,firewall,system,dhcp}` | 初始 UCI 配置（目标文件不存在时才安装）；firewall 全部放行，只为建出 `table inet fw4`；dhcp 只有 dnsmasq 的 DNS 部分，见「DNS 劫持」 |
+| `files/usr/share/luci/menu.d/openclash-linux.json` | 唯一的菜单定义：3 个系统页挂在 `admin/services/openclash/sys-*` 下 |
+| `files/www/luci-static/resources/menu-bootstrap.js` | 替换主题的页头菜单：不显示顶层分类，OpenClash 子菜单横排成页签，右上角只保留「退出」 |
+| `files/usr/libexec/syslog-wrapper` | 系统日志页：读取 journald，按 OpenWrt `logread` 的格式输出 |
 | `files/openclash-linux.zh_Hans.po` | 菜单里 LuCI 没有的词条（「系统状态」） |
-
-## 依赖
-
-出包机（任意有 sudo 的 Linux，WSL 也行）：`debootstrap`。编译工具由 `release.sh` 装进 Debian 11 chroot，不装到本机。
-不经 `release.sh`、直接在本机跑 `build.sh` 时要：gcc、make、cmake、pkg-config、git、curl、bzip2、xz、patch、perl、fakeroot。
-
-运行机：systemd、glibc ≥ 2.31、内核 ≥ 5.2（`/bin/sh` 是 bash 时要用新挂载 API），以及命令 bash、curl、unzip、nft、ip、ss、nsenter、flock、ps。
-Lua、ruby、json-c、libcrypt、libyaml 都自带，不用装。缺命令时安装包会按包管理器给出安装命令：
-
-| 包管理器 | 命令 |
-|---|---|
-| apt | `sudo apt install curl unzip nftables iproute2 util-linux procps` |
-| dnf | `sudo dnf install curl unzip nftables iproute util-linux procps-ng` |
-| pacman | `sudo pacman -S curl unzip nftables iproute2 util-linux procps-ng` |
-| zypper | `sudo zypper install curl unzip nftables iproute2 util-linux procps` |
-
-`ps` 必须是 procps 的（见「注意」）。
 
 ## 版本锁定
 
-全部取自 OpenWrt **v24.10.8**（`0b795ce7`）：基础组件来自各包 Makefile 的 `PKG_SOURCE_VERSION`，LuCI 来自 `feeds.conf.default`。
+版本以 OpenWrt **v24.10.8**（`0b795ce7`）为准：基础组件取自各包 Makefile 的 `PKG_SOURCE_VERSION`，LuCI 取自 `feeds.conf.default`，
+cgi-io、ruby、libxcrypt、libyaml 取自 packages feed `23abaa6f`。nftables / libnftnl 例外，见表后说明。
 
 | 组件 | 仓库 | commit |
 |---|---|---|
@@ -138,30 +231,33 @@ nftables / libnftnl 是唯一没有沿用 OpenWrt 24.10.8 版本的组件。`nft
 而 libnftables 1.1.1 读取新版 `nft` 创建的集合元数据时会调用空函数指针（`set_make_key` 没有检查 `parse_udata`），
 导致 dnsmasq 一往 fw4 的集合里添加地址就段错误（宿主 nft 1.1.6 实测）。OpenWrt 上命令和库版本一致，不存在这个问题。
 
-**和 OpenWrt 一样打的包补丁**（`build.sh` 的 `owrt_patches`，取自同一版本主仓库的 `package/*/patches`）：
-ucode 1 个、uhttpd 17 个（多为安全修复）、rpcd 11 个、jsonfilter 1 个、dnsmasq 2 个、Lua 和 json-c 各按 OpenWrt 的 `patches` 目录。
+**和 OpenWrt 一样打上的包补丁**（`build.sh` 的 `owrt_patches`，取自同一版本主仓库的 `package/*/patches`）：
+ucode 1 个、uhttpd 17 个（多为安全修复）、rpcd 11 个、jsonfilter 1 个、dnsmasq 2 个，Lua 和 json-c 各按 OpenWrt 的 `patches` 目录。
 
-**我们自己对 OpenWrt 组件的改动**（都在 `build.sh` 里，带断言，源码变了会直接报错）：
+**我们自己对 OpenWrt 组件的改动**（都在 `build.sh` 里，并带有断言，源码一变就会直接报错）：
 
 | 组件 | 改动 | 原因 |
 |---|---|---|
 | rpcd | ACL、ucode 脚本、exec 插件目录改回 `/usr/share/rpcd`、`/usr/libexec/rpcd` | 原本跟随安装前缀 `/opt/openclash/rt` |
-| procd | ubus `system reboot`、`sysupgrade` 直接返回「不支持」 | 非 PID 1 时 reboot 会走到停机流程 `kill(-1)`（杀掉宿主全部进程），sysupgrade 会在 procd 里 chroot+exec |
-| procd | 关掉 `-Wunused-function -Wformat-overflow` 告警；glibc < 2.38 时补一个 `strlcpy` | `DISABLE_INIT` 这条编译路径在新 gcc 下有两处告警；Debian 11 的 glibc 没有 `strlcpy` |
-| procd | 实例的 `group nogroup` 查不到时用 gid 65534 | 上游用 nogroup 跑内核，防火墙按 `skgid 65534` 放过内核自己的流量；Fedora 没有 nogroup（65534 叫 nobody），内核按 root 跑，直连流量被送回 TUN 形成回环 |
-| 全部 C 组件 | 强制包含一个只声明 `vasprintf` 的头文件 | ucode 用 `vasprintf`，glibc 2.31 只在 `_GNU_SOURCE` 下声明，各项目对 `_GNU_SOURCE` 的定义互相冲突 |
-| LuCI dispatcher.uc | ubus 连接从模块顶层挪到 `dispatch()` 开头 | uhttpd 在父进程加载调度器，fork 出的请求子进程共用一条连接，带会话的并发请求会互相读走回复而挂住（WSL 实测 6/6 挂；改后 8/8 在 0.03 秒内返回） |
+| procd | ubus `system reboot`、`sysupgrade` 直接返回「不支持」 | 非 PID 1 时，reboot 会走到停机流程的 `kill(-1)`（杀掉宿主上的全部进程）；sysupgrade 会在 procd 里 chroot+exec |
+| procd | 关掉 `-Wunused-function -Wformat-overflow` 告警；glibc < 2.38 时补一个 `strlcpy` | `DISABLE_INIT` 这条编译路径在新版 gcc 下有两处告警；Debian 11 的 glibc 没有 `strlcpy` |
+| procd | 实例的 `group nogroup` 查不到时用 gid 65534 | 上游用 nogroup 运行内核，防火墙按 `skgid 65534` 放行内核自己的流量。Fedora 没有 nogroup（65534 叫 nobody），procd 查不到组就以 root 运行内核，直连流量被送回 TUN，形成回环 |
+| 全部 C 组件 | 强制包含一个只声明 `vasprintf` 的头文件 | ucode 用到 `vasprintf`，glibc 2.31 只在 `_GNU_SOURCE` 下声明它，而各项目对 `_GNU_SOURCE` 的定义互相冲突 |
+| LuCI dispatcher.uc | ubus 连接从模块顶层挪到 `dispatch()` 开头 | uhttpd 在父进程里加载调度器，fork 出的请求子进程共用同一条连接，带会话的并发请求会互相读走对方的回复而挂住（WSL 实测 6/6 挂住；修改后 8/8 在 0.03 秒内返回） |
 | busybox | 关掉 top 的 CPU 列和小数 | 和 OpenWrt 一致，LuCI 进程页按这个格式解析 |
-| dnsmasq | 编译时去掉 DHCPv6、TFTP、认证 DNS、ipset（DHCP 只有 IPv4） | 编了 DHCPv6，启动脚本会加 `--enable-ra`，开 DHCP 后盒子会发 IPv6 路由通告；ipset 换成 nftset |
-| dnsmasq 启动脚本 | 降权用户从 `dnsmasq` 改成 `nobody`，去掉 `--group=dnsmasq` | OpenWrt 装包时会建 dnsmasq 用户和组，各发行版不一定有；不往宿主加账号 |
-| dnsmasq 启动脚本 | 不再引入 `/etc/dnsmasq.conf` | 普通 Linux 上那是发行版 dnsmasq 的配置（Fedora 的写着 `user=dnsmasq`、`conf-dir=/etc/dnsmasq.d` 等），引进来和生成的选项重复，dnsmasq 起不来；`/etc/dnsmasq.<段名>.conf` 照旧引入 |
-| dnsmasq 启动脚本 | 开 DHCP 前探测别的 DHCP 服务器时发 3 次 DISCOVER（原版 1 次） | 对方刚起来时第一次常收不到 OFFER（WSL 命名空间里每轮必现），会出现两个 DHCP 服务器；代价是开了 DHCP 又没有别的服务器时，dnsmasq 每次启动多等约 9 秒 |
-| dnsmasq 启动脚本 | `boot` 不再设 `BOOT=1` | 原版开机时不加 `--interface`（那时 netifd 还没把接口拉起来，之后靠接口事件 reload）；我们的开机脚本在网络就绪后才跑，也没有接口事件 |
-| nftables | 4 处 `case` 标签后补一个空语句 | 标签后直接跟声明 gcc 11 起才接受，Debian 11 是 gcc 10 |
+| dnsmasq | 编译时去掉 DHCPv6、TFTP、认证 DNS、ipset（DHCP 只有 IPv4） | 编了 DHCPv6 的话，启动脚本会加 `--enable-ra`，开 DHCP 后盒子会发 IPv6 路由通告；ipset 换成了 nftset |
+| dnsmasq 启动脚本 | 降权用户从 `dnsmasq` 改成 `nobody`，去掉 `--group=dnsmasq` | OpenWrt 装包时会建 dnsmasq 用户和组，各发行版不一定有；我们不往宿主添加账号 |
+| dnsmasq 启动脚本 | 不再引入 `/etc/dnsmasq.conf` | 普通 Linux 上那是发行版 dnsmasq 的配置（Fedora 的写着 `user=dnsmasq`、`conf-dir=/etc/dnsmasq.d` 等），引入后和生成的选项重复，dnsmasq 无法启动；`/etc/dnsmasq.<段名>.conf` 照旧引入 |
+| dnsmasq 启动脚本 | 开 DHCP 前探测其他 DHCP 服务器时发 3 次 DISCOVER（原版 1 次） | 对方刚启动时，第一次常常收不到 OFFER（WSL 命名空间里每轮都能复现），结果会出现两个 DHCP 服务器；代价是开了 DHCP 而局域网里没有其他服务器时，dnsmasq 每次启动要多等约 9 秒 |
+| dnsmasq 启动脚本 | `boot` 不再设置 `BOOT=1` | 原版开机时不加 `--interface`（那时 netifd 还没把接口拉起来，之后靠接口事件 reload）；我们的开机脚本在网络就绪后才运行，也没有接口事件 |
+| nftables | 4 处 `case` 标签后补一个空语句 | 标签后直接跟声明的写法 gcc 11 起才接受，Debian 11 用的是 gcc 10 |
 
 上游 OpenClash **没有打任何补丁**。`openclash_get_network.lua` 原本计划打补丁，有了 network 垫片（`openclash-network`）后，它可以原样工作。
 
 ## 编译、打包
+
+出包机（任意有 sudo 的 Linux，WSL 也行）只需要 `debootstrap`，编译工具由 `release.sh` 装进 Debian 11 chroot，不装到本机。
+不经 `release.sh`、直接在本机运行 `build.sh` 时需要：gcc、make、cmake、pkg-config、git、curl、bzip2、xz、patch、perl、fakeroot。
 
 ```sh
 git clone https://github.com/vernesong/OpenClash ../OpenClash   # 上游源码（pack-openclash.sh 用 git archive 取）
@@ -179,117 +275,25 @@ bash pack-openclash.sh    # 默认取 ../OpenClash/luci-app-openclash，也可�
 - 再次运行会跳过已完成的步骤；要重做某一步，删掉 `stamp/` 下对应的文件（chroot 里是 `chroot-bullseye/build/stamp/`）。
 - 每个组件的编译日志在 `build/<组件>.log`。
 
-## 安装 / 卸载
-
-```sh
-sudo sh openclash-linux-0.48.011-x86_64.run                         # 首次安装：监听 <LAN IP>:80，装 ipk，运行开机脚本
-sudo sh openclash-linux-0.48.011-x86_64.run --listen 0.0.0.0:8080   # 指定监听地址（80 被占用时用这个）
-sudo sh openclash-linux-0.48.011-x86_64.run --no-boot               # 只起网页栈和 procd，不启动 fw4/cron/OpenClash（调试用）
-sudo sh openclash-linux-0.48.011-x86_64.run --login-user alice      # 网页另外允许系统用户 alice 用自己的密码登录（默认是执行 sudo 的用户）
-sudo /opt/openclash/rt/sbin/openclash-uninstall
-```
-
-升级时直接运行新版本的安装包即可，配置会保留。安装包解压后实际执行的是本仓库的 `install.sh --ipk <ipk> <运行时包>`。
-
-只升级 OpenClash 插件不用重装：网页「检查更新」里的插件更新和「历史版本」降级都和路由器上一样，走上游的
-`openclash_update.sh`（下载 ipk → `opkg --noaction` 预检 → 由 procd 启动一个更新服务执行 `opkg install`）。
-预检不通过（包损坏、依赖不满足）时直接退出，旧版不受影响；配置和 `/etc/openclash` 里的文件会保留。上游没有自动回滚，
-装坏了就从「历史版本」装回旧版。以上在容器里实测过：升级、坏包被拦截、降级回原版（见下文「测试」）。
-
-- 「本机 DNS 劫持」的默认值和上游一样，是 **dnsmasq 转发**（模式 1），见下文「DNS 劫持」。从旧版本升级的保留原设置（旧版本首次安装时设为模式 2）。
-- `/etc/config/network` 由 openclash-boot 首次按网卡生成：单网卡 = `lan`；两张网卡时默认路由那张 = `wan`、另一张 = `lan`。
-  之后每次启动只刷新各接口的 `ipaddr`。改了接口要 `sudo systemctl restart openclash-rpcd`。
-- 已存在的 `/etc/config/*` 不覆盖；安装清单在 `/opt/openclash/rt/.manifest`，重装时会删掉上次装了、这次没有的文件。
-  清单里结尾带 `/` 的是目录：卸载和升级清理时目录只会在空了以后 `rmdir`，绝不当文件删
-  （运行时包里有 `/lib`、`/sbin`，合并 /usr 的发行版上它们是指向 `usr/` 的符号链接，删了系统起不来）；根目录下的条目一律不删。
-- 和 OpenWrt 一样，登录用系统 root 密码（rpcd `$p$root`，校验 `/etc/shadow`）。install.sh 还会额外允许一个系统用户登录（默认是执行 sudo 的用户，可用 `--login-user` 指定），密码就是该用户自己的系统密码。
-  这是因为 Ubuntu 默认锁定 root，NAS 之类系统的 root 密码在装机时设定，用户并不知道（飞牛 NAS 实测）。这个用户在网页上拥有全部权限，等同 root。
-- 卸载会走上游的 postrm：删除 `/etc/openclash` 和 `/etc/config/openclash`（和 OpenWrt 上卸载一样）。
-
-## DNS 劫持（模式 1：dnsmasq 转发）
-
-和路由器上一样：dnsmasq 由 OpenWrt 原版启动脚本按 `/etc/config/dhcp` 生成配置、交给 procd 托管；OpenClash 启动时把它的上游改成
-内核的 DNS 端口（`127.0.0.1#7874`），并在 fw4 里把局域网发往任何地址的 53 端口请求重定向到 dnsmasq；停止时还原。
-「指定 DNS 服务器」「大陆绕过例外列表」这两个只在模式 1 出现的选项靠 dnsmasq 的 `server=` 和 `nftset=` 实现
-（例外域名解析出的地址由 dnsmasq 写进 fw4 的 `china_ip_route_pass` 集合）。
-
-和路由器不同的地方：
-
-- **不占 systemd-resolved 的地址**：dnsmasq 只在局域网网卡的地址和 `127.0.0.1` 上监听（`interface 'lan'` + `nonwildcard`），
-  `127.0.0.53`、`127.0.0.54` 以及 Docker、隧道等网卡的地址都不碰；宿主自己的 `/etc/resolv.conf` 不改，宿主照旧用它原来的 DNS。
-- **上游 DNS**：OpenClash 停着时 dnsmasq 转发给本机实际使用的 DNS 服务器。`openclash-boot` 每次启动把它们写进
-  `/tmp/resolv.conf.d/resolv.conf.auto`（OpenWrt 上由 netifd 写）：有 systemd-resolved 时取 `/run/systemd/resolve/resolv.conf`
-  里的真实服务器，否则取 `/etc/resolv.conf`，回环地址一律跳过。
-- **53 端口被占用时**：首次安装发现 53 已被别的程序占用（监听全部地址、`127.0.0.1` 或局域网地址）就把 dnsmasq 改到 5335 端口
-  （`/etc/config/dhcp` 的 `port`）。OpenClash 运行时不受影响（劫持规则按这个端口重定向），只是它停着时盒子的 53 端口没人应答。
-- **DHCP 默认关闭**：dnsmasq 编进了 DHCP（只有 IPv4），但默认配置里没有 `config dhcp` 段，不分配地址——局域网里只能有一个 DHCP 服务器。
-  旁路由用法：在主路由的 DHCP 里把网关（和 DNS）指向盒子，或在设备上手动设置。要让盒子自己分配地址（当主路由用），
-  照 `/etc/config/dhcp` 开头注释里的写法加一段，重启 dnsmasq，并在宿主防火墙放行 UDP 67；之后 OpenClash 设备列表里能显示设备名（来自 DHCP 租约）。
-- dnsmasq 以 `nobody` 运行，`ubus` 选项关闭（OpenWrt 上是给 DHCP 事件用的）。
-
-不想用 dnsmasq 可以在「插件设置 → DNS 设置 → 本机 DNS 劫持」改成「防火墙转发」（模式 2），局域网的 DNS 请求直接重定向到内核。
-
-## 宿主防火墙
-
-nftables 里其他表丢弃的包，fw4 放行也没用，所以 `openclash-hostfw` 直接修改宿主自己的防火墙（由 install.sh 和每次开机脚本调用，卸载时撤销）：
-
-- **firewalld**：在局域网网卡所在区域（网卡没绑区域时用默认区域，并把网卡加进去）开网页、53（和 dnsmasq 改过的端口）、OpenClash 各端口（tcp+udp），
-  开区域内转发（`forward`），把 `utun` 加进同一区域。**只加区域里原来没有的**：已在端口范围里的端口不加
-  （firewalld 往范围里加单个端口会把范围拆开，撤销后范围就缺了这个端口）；区域原本就开着的 `forward` 不会被卸载关掉。运行时和永久配置都改。
-- **ufw**：在局域网网卡上放行这些端口，允许局域网网卡、`utun` 的转发。
-- **Docker**：Docker 把 iptables `FORWARD` 默认策略设成 DROP，旁路由转发会被丢。在它留给用户的 `DOCKER-USER` 链里只放行
-  局域网网卡 ↔ 同一网卡、局域网网卡 ↔ `utun`，不放行到容器网段。
-
-做过的改动以撤销命令的形式记在 `/opt/openclash/rt/.hostfw`。
-
 ## 测试
 
-- 启动 OpenClash、改 nft/路由的测试只在网络命名空间里做：全部 openclash-* 服务临时放进命名空间
-  （`/run/systemd/system/openclash-.service.d/netns.conf` 写 `NetworkNamespacePath=/run/netns/<名字>`，`daemon-reload` 后再启动），
-  另建客户端和「上游」命名空间；启动前确认每个单元的 `NetworkNamespacePath` 已生效。在 WSL（Ubuntu 26.04）里这样测过
-  全部页面和接口、写操作、更新、DNS 模式 1 和 2 × 6 种运行模式、黑白名单、IPv6（4 种 IPv6 代理模式）、kill -9 拉起、停止清理。
-- 其他发行版用 `systemd-nspawn -b --private-network` 容器测（Debian 11、Fedora 44 + firewalld）：装、重复装、网页登录、
-  插件经网页升级/坏包被拦/降级、卸载后整个文件系统和防火墙（含 firewalld 运行时/永久配置）与安装前逐条对比。
-- 实机：飞牛 fnOS（Debian 12 系）上用真实订阅测过 6 种运行模式（TCP 和 UDP 经节点）、只代理指定设备、本机流量不受影响。
-- 测试脚本（命名空间拓扑、容器、实机远程安全网）没有放进这个仓库。
+- 会启动 OpenClash、修改 nft 规则或路由的测试，都只在网络命名空间里做：把全部 openclash-* 服务临时放进命名空间
+  （`/run/systemd/system/openclash-.service.d/netns.conf` 写入 `NetworkNamespacePath=/run/netns/<名字>`，`daemon-reload` 后再启动），
+  另外建客户端和「上游」命名空间；启动前确认每个单元的 `NetworkNamespacePath` 都已生效。在 WSL（Ubuntu 26.04）里用这种方式测过：
+  全部页面和接口、写操作、更新、DNS 模式 1 和 2 × 6 种运行模式、黑白名单、IPv6（4 种 IPv6 代理模式）、kill -9 后自动拉起、停止后的清理。
+- 其他发行版用 `systemd-nspawn -b --private-network` 容器测试（Debian 11、Fedora 44 + firewalld）：安装、重复安装、网页登录、
+  经网页升级插件/坏包被拦截/降级，以及卸载后把整个文件系统和防火墙（含 firewalld 运行时/永久配置）与安装前逐条对比。
+- 实机：在飞牛 fnOS（Debian 12 系）上用真实订阅测过 6 种运行模式（TCP 和 UDP 都经过节点）、只代理指定设备、本机流量不受影响。
+- 测试脚本（命名空间拓扑、容器、实机远程安全网）没有放进本仓库。
 - 用自动化浏览器在不显示的窗口里打开网页时，页面会一直停在「载入视图」：LuCI 会把 RPC 请求攒到下一次重绘（`requestAnimationFrame`）才发出，
   窗口不重绘就不发。这不是服务端的问题。
 
-## 注意
-
-1. **视图里的 `ps` 必须是 procps 的，不能换成 busybox。** 上游网页的启停接口会执行
-   `ps | grep -E 'openclash|clash|mihomo' | awk '{print $1}' | xargs kill -9`。procps 的 `ps -efw` 第一列是用户名，这行实际杀不到东西；
-   busybox `ps` 第一列是 PID，会把 `/opt/openclash/rt` 下的网页栈和机器上别的 mihomo 服务一起杀掉。
-2. `/etc/rc.d`、`/etc/openwrt_release`、`/sbin/uci` 等 OpenWrt 路径会出现在宿主上（宿主没有时建的符号链接/文件），都记在安装清单里，卸载时删除。
-3. procd 发现 `/sys/fs/cgroup` 可写会在宿主 cgroup 根下建 `services/` 子树，所以 openclash-procd 设了 `ProtectControlGroups=yes`，
-   实例改为按 PID 管理（日志里每次启动实例有一行 `failed adding instance cgroup` 警告，属正常）。
-4. fw4 的状态文件 `/var/run/fw4.state` 存在时，`fw4 start` 会认为已加载而跳过；重启机器后 `/run` 清空，不受影响。
-5. 开机脚本和 OpenWrt 一样打开 IPv4、IPv6 转发（`net.ipv4.ip_forward`、`net.ipv6.conf.all.forwarding`）。IPv6 转发不开时，
-   IPv6 的 TUN/混合模式和不经内核的 IPv6 直通流量都不通（装了 Docker 的机器上 Docker 已经打开了）。开 IPv6 转发前把 `accept_ra=1`
-   的网卡改成 `2`，否则内核不再接受 RA，宿主自己的 IPv6 默认路由会到期消失；NetworkManager、systemd-networkd 管的网卡自己处理 RA，不受影响。
-   首次安装时记下转发的原值（`/opt/openclash/rt/.sysctl`，开机脚本改过的 accept_ra 也记在这里），卸载时改回去；Docker 在跑时不关转发。
-   从 0.48.011-2 及更早版本升级上来的，记下的是升级时的值（那时转发已经开着）。
-
-## 已知问题
-
-1. SELinux（Fedora 默认 Enforcing）还没在实机上验证：容器里测不了。
-2. 没有编译 TLS，网页只提供 HTTP（原设计如此）。
-3. `/etc/config/*` 由 uci 改写后，模板里的注释会消失。
-4. 系统状态页没有网络/DHCP/无线块（需要 `luci-rpc`）；浏览器控制台里登录页有一条 `uci/get Access denied`（匿名会话，OpenWrt 上也有）。
-5. 系统日志只取 journald 最近 1000 条，要更多改 `syslog-wrapper` 里的 `-n`。
-6. 服务刚重启后马上登录偶尔返回登录页（rpcd 还没就绪），再登一次即可。
-7. 没编 ubox 的 `validate_data`：cron 启动脚本的参数校验会打一行 `/sbin/validate_data: not found`，不影响运行。
-8. 没有 `brctl`：上游读网络信息时会打 `brctl: not found`，不影响结果。
-9. 宿主自己的域名解析不经过 dnsmasq（`/etc/resolv.conf` 没改）：宿主自己发出的流量按 IP 规则分流，域名规则对它不起作用。
-   路由器上「路由器自身」的请求是走 dnsmasq → 内核的。
-10. 卸载后 `/tmp` 下运行时生成的文件（`/tmp/etc`、`/tmp/dnsmasq.*.d`、`/tmp/resolv.conf*`、`/tmp/hosts` 等）留到下次重启才消失。
-
 ## 许可证
 
-本仓库的脚本和代码（`build.sh`、`install.sh`、`files/` 等）以 GPL-2.0（仅第 2 版，和 OpenWrt 一样）发布，全文见 [LICENSE](LICENSE)。
-例外：`files/www/luci-static/resources/menu-bootstrap.js` 改自 LuCI 主题 luci-theme-bootstrap 的同名文件，沿用 LuCI 的 Apache-2.0。
+本仓库的脚本和代码（`build.sh`、`install.sh`、`files/` 等）以 GPL-2.0（仅限第 2 版，与 OpenWrt 相同）发布，全文见 [LICENSE](LICENSE)。
+例外：`files/www/luci-static/resources/menu-bootstrap.js` 改自 LuCI 主题 luci-theme-bootstrap 的同名文件，沿用 LuCI 的 Apache-2.0 许可。
 
-安装包里打进去的上游组件都没改许可，各自沿用原来的许可证：
+安装包里打包的上游组件都未改动许可，各自沿用原来的许可证：
 
 | 组件 | 许可证 |
 |---|---|
@@ -303,5 +307,5 @@ nftables 里其他表丢弃的包，fw4 放行也没用，所以 `openclash-host
 | Lua 5.1、json-c、libyaml、lucihttp | MIT |
 | ruby | Ruby 许可或 BSD-2-Clause |
 
-每个 Release 都附带 `openclash-linux-<版本>-sources.tar.xz`：安装包里这些组件编译用的全部源码和 OpenWrt 的补丁。
+每个 Release 都附带 `openclash-linux-<版本>-sources.tar.xz`，包含安装包里这些组件编译所用的全部源码和 OpenWrt 的补丁。
 mihomo 内核（GPL-3.0）不在安装包里，由 OpenClash 自己下载。
