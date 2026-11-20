@@ -1,12 +1,20 @@
 # openclash-linux：在普通 Linux 上原样运行 OpenClash
 
-把 OpenWrt **24.10** 的网页栈（ubus / uci / rpcd / uhttpd / ucode / LuCI）和 OpenClash 后端要用的系统组件
-（procd / opkg / fw4 / dnsmasq / busybox crond）从源码编译出来，装到普通 Linux（systemd）上，再用 opkg 装上游 luci-app-openclash。
-上游的 sh/ruby/lua 后端和 LuCI 页面都不改；打开网址就是 OpenClash 运行状态页，只有 OpenClash 6 页 + 系统状态/系统日志/进程。
+从源码编译 OpenWrt **24.10** 的网页栈（ubus / uci / rpcd / uhttpd / ucode / LuCI）以及 OpenClash 后端依赖的系统组件
+（procd / opkg / fw4 / dnsmasq / busybox crond），装到普通 Linux（systemd）上，再用 opkg 安装上游的 luci-app-openclash。
+上游的 sh/ruby/lua 后端和 LuCI 页面都不做修改。打开网页直接进入 OpenClash 运行状态页，菜单里只有 OpenClash 的 6 个页面，
+外加系统状态、系统日志、进程。
 
-发布用 `release.sh` 在 Debian 11（glibc 2.31）chroot 里统一编译，Lua、ruby 和它们依赖的库全部自带，打成一个自解压安装包
-`openclash-linux-<版本>-<arch>.run`。目标机只要求 systemd、glibc ≥ 2.31、x86-64 基础指令集（不用 SSE4.2/AVX），
-外加几个各发行版都有的命令（见「依赖」）。已验证：Ubuntu 26.04（WSL，网络命名空间）、Fedora 44（systemd-nspawn 容器，firewalld 开启）、Debian 11（systemd-nspawn 容器，systemd 247）、飞牛 fnOS（实机，Debian 12 系，真实订阅 + 6 种运行模式）。
+发布版由 `release.sh` 在 Debian 11（glibc 2.31）chroot 中统一编译，自带 Lua、ruby 及其依赖库，打包成一个自解压安装包
+`openclash-linux-<版本>-<arch>.run`。目标机只需 systemd、glibc ≥ 2.31、x86-64 基础指令集（不要求 SSE4.2/AVX），
+以及几个各发行版都有的命令（见「依赖」）。
+
+已验证的系统：
+
+- Ubuntu 26.04（WSL，网络命名空间）
+- Fedora 44（systemd-nspawn 容器，开启 firewalld）
+- Debian 11（systemd-nspawn 容器，systemd 247）
+- 飞牛 fnOS（实机，Debian 12 系，真实订阅 + 6 种运行模式）
 
 ## 一键安装
 
@@ -14,16 +22,16 @@
 curl -fsSL https://github.com/Isshin-O/openclash-linux/releases/latest/download/get.sh | sudo sh
 ```
 
-装完按提示在浏览器打开 `http://<本机局域网 IP>/`，用 root 或执行 sudo 的那个账号、以它自己的系统密码登录，之后和路由器上的 OpenClash 一样用。
-家里设备把网关和 DNS 指向这台机器就走代理。
+安装完成后，按提示用浏览器打开 `http://<本机局域网 IP>/`，用 root 或执行 sudo 的账号登录（密码就是该账号的系统密码），
+之后的用法和路由器上的 OpenClash 相同。把家里设备的网关和 DNS 指向这台机器，流量就会走代理。
 
 - 安装参数接在 `sh -s --` 后面，例如 `... | sudo sh -s -- --listen 0.0.0.0:8080`（参数见「安装 / 卸载」）
 - 国内直连 GitHub 不通时，给下载地址加代理前缀（两处都要加）：
   `curl -fsSL https://gh-proxy.com/https://github.com/Isshin-O/openclash-linux/releases/latest/download/get.sh | sudo OC_MIRROR=https://gh-proxy.com/ sh`
 - 只下载、校验，不安装：`... | sh -s -- --download-only`（安装包存到当前目录，之后 `sudo sh openclash-linux-*.run`）
 - 卸载：`sudo /opt/openclash/rt/sbin/openclash-uninstall`
-- 要求：systemd、glibc ≥ 2.31、x86_64，以及 bash curl unzip nft ip ss nsenter flock ps（缺了安装脚本会告诉你用哪条命令装）。
-  装之前先停掉机器上别的 Clash/mihomo 服务（端口会冲突）。
+- 要求：systemd、glibc ≥ 2.31、x86_64，以及 bash curl unzip nft ip ss nsenter flock ps（缺少时安装脚本会给出安装命令）。
+  安装前先停掉本机其他 Clash/mihomo 服务，否则端口会冲突。
 
 ## 怎么跑起来的
 
@@ -38,15 +46,15 @@ systemd
 ```
 
 上游脚本写死了很多 OpenWrt 路径（`/bin/sh` 是 busybox、`/etc/init.d/` 里是 rc.common 脚本、`/sbin/uci`……）。
-`install.sh` 对这些路径逐个处理：**宿主上没有的直接建符号链接；宿主上已有同名的（如 `/bin/sh`→dash、发行版的 `/etc/init.d`），
-只在 openclash-* 服务的挂载命名空间里换掉**（`/etc/systemd/system/openclash-.service.d/view.conf` 的 `BindPaths`、`PrivateMounts=yes`），宿主不受影响。
+`install.sh` 逐个处理这些路径：**宿主上没有的，直接建符号链接；宿主上已有同名的（如 `/bin/sh`→dash、发行版的 `/etc/init.d`），
+只在 openclash-* 服务的挂载命名空间里替换**（`/etc/systemd/system/openclash-.service.d/view.conf` 的 `BindPaths`、`PrivateMounts=yes`），宿主不受影响。
 
-`/bin/sh` 要特别处理：上游脚本只能用 busybox ash 跑（bash 当 sh 会把 nft 规则里不带引号的 `{tcp,udp}` 展开），上游又有 `#!/bin/bash` 的脚本。
-Debian/Ubuntu 的 `/bin/sh`→dash，bind mount 会挂到 dash 上，没问题；Fedora/RHEL/Arch/openSUSE 的 `/bin/sh`→bash，bind mount 会把 bash 本身换掉。
-所以几个服务的 ExecStart 前面加了 `openclash-view`：`/bin/sh` 是 bash 时，它用新挂载 API（`open_tree`+`move_mount`，内核 ≥ 5.2）
-把 busybox 挂在 `/bin/sh` 这个符号链接本身上（不跟随到 bash），再执行原命令；和 PID 1 在同一挂载命名空间时拒绝挂载。
+`/bin/sh` 需要单独处理：上游脚本只能用 busybox ash 执行（bash 当 sh 用会把 nft 规则里不带引号的 `{tcp,udp}` 展开），而上游又有 `#!/bin/bash` 的脚本。
+Debian/Ubuntu 的 `/bin/sh`→dash，bind mount 挂到 dash 上，没有问题；Fedora/RHEL/Arch/openSUSE 的 `/bin/sh`→bash，bind mount 会把 bash 本身也换掉。
+因此几个服务的 ExecStart 前面加了 `openclash-view`：当 `/bin/sh` 是 bash 时，它用新挂载 API（`open_tree`+`move_mount`，内核 ≥ 5.2）
+把 busybox 挂在 `/bin/sh` 这个符号链接本身上（不跟随到 bash），再执行原命令；如果和 PID 1 处在同一挂载命名空间，则拒绝挂载。
 
-要在这个「OpenWrt 视图」里手动执行命令，用 `openclash-run`：
+要在这个「OpenWrt 视图」里手动执行命令，使用 `openclash-run`：
 
 ```sh
 sudo /opt/openclash/rt/sbin/openclash-run /etc/init.d/openclash restart
@@ -124,11 +132,11 @@ Lua、ruby、json-c、libcrypt、libyaml 都自带，不用装。缺命令时安
 | libnftnl 1.3.1（**比 OpenWrt 24.10.8 的 1.2.8 新**，见下） | netfilter.org | sha256 `607da28d…ffba8` |
 | nftables 1.1.6（只用库 libnftables；**比 OpenWrt 24.10.8 的 1.1.1 新**，见下） | netfilter.org | sha256 `372931bd…2530c` |
 
-ucode 和 lucihttp 没有 openwrt 名下的镜像，OpenWrt 自己的 Makefile 也是从 jow-（OpenWrt 维护者）的仓库取，按 commit 锁定。
+ucode 和 lucihttp 在 OpenWrt 名下没有镜像，OpenWrt 自己的 Makefile 也是从维护者 jow- 的仓库拉取，这里同样按 commit 锁定。
 
-nftables / libnftnl 是唯一没有跟 OpenWrt 24.10.8 版本的：`nft` 命令用的是宿主发行版的（往往比 1.1.1 新），
-libnftables 1.1.1 读到新版 `nft` 建的集合元数据时会调用空函数指针（`set_make_key` 没检查 `parse_udata`），
-dnsmasq 一往 fw4 的集合里加地址就段错误（宿主 nft 1.1.6 实测）。OpenWrt 上命令和库是同一版本，没有这个问题。
+nftables / libnftnl 是唯一没有沿用 OpenWrt 24.10.8 版本的组件。`nft` 命令用的是宿主发行版自带的（通常比 1.1.1 新），
+而 libnftables 1.1.1 读取新版 `nft` 创建的集合元数据时会调用空函数指针（`set_make_key` 没有检查 `parse_udata`），
+导致 dnsmasq 一往 fw4 的集合里添加地址就段错误（宿主 nft 1.1.6 实测）。OpenWrt 上命令和库版本一致，不存在这个问题。
 
 **和 OpenWrt 一样打的包补丁**（`build.sh` 的 `owrt_patches`，取自同一版本主仓库的 `package/*/patches`）：
 ucode 1 个、uhttpd 17 个（多为安全修复）、rpcd 11 个、jsonfilter 1 个、dnsmasq 2 个、Lua 和 json-c 各按 OpenWrt 的 `patches` 目录。
@@ -151,7 +159,7 @@ ucode 1 个、uhttpd 17 个（多为安全修复）、rpcd 11 个、jsonfilter 1
 | dnsmasq 启动脚本 | `boot` 不再设 `BOOT=1` | 原版开机时不加 `--interface`（那时 netifd 还没把接口拉起来，之后靠接口事件 reload）；我们的开机脚本在网络就绪后才跑，也没有接口事件 |
 | nftables | 4 处 `case` 标签后补一个空语句 | 标签后直接跟声明 gcc 11 起才接受，Debian 11 是 gcc 10 |
 
-上游 OpenClash **没有打任何补丁**（方案里原计划的 `openclash_get_network.lua` 补丁不需要了，network 垫片让它原样工作）。
+上游 OpenClash **没有打任何补丁**。`openclash_get_network.lua` 原本计划打补丁，有了 network 垫片（`openclash-network`）后，它可以原样工作。
 
 ## 编译、打包
 
@@ -160,15 +168,15 @@ git clone https://github.com/vernesong/OpenClash ../OpenClash   # 上游源码�
 bash release.sh           # 出安装包 ~/build/openclash-linux/openclash-linux-<版本>-<arch>.run（上游源码默认 ../OpenClash/luci-app-openclash）
 ```
 
-`release.sh` 第一次会 debootstrap 一个 Debian 11 chroot（`~/build/openclash-linux/chroot-bullseye`），本目录和上游仓库只读挂进去，
-编译目录是 chroot 里的 `/build`。也可以不经 chroot 直接在本机编（产物只能在 glibc 不低于本机的系统上用）：
+`release.sh` 首次运行时会 debootstrap 一个 Debian 11 chroot（`~/build/openclash-linux/chroot-bullseye`），本仓库和上游仓库以只读方式挂载进去，
+编译目录是 chroot 里的 `/build`。也可以不经 chroot、直接在本机编译（产物只能在 glibc 版本不低于本机的系统上使用）：
 
 ```sh
 bash build.sh             # 默认工作目录 ~/build/openclash-linux，可用 WORK=... 指定；源码要放在 Linux 文件系统里（脚本会拒绝 /mnt/*）
 bash pack-openclash.sh    # 默认取 ../OpenClash/luci-app-openclash，也可以把上游源码目录作为参数
 ```
 
-- 再次运行会跳过已完成的步骤；想重做某一步：删 `stamp/` 下对应的文件（chroot 里是 `chroot-bullseye/build/stamp/`）。
+- 再次运行会跳过已完成的步骤；要重做某一步，删掉 `stamp/` 下对应的文件（chroot 里是 `chroot-bullseye/build/stamp/`）。
 - 每个组件的编译日志在 `build/<组件>.log`。
 
 ## 安装 / 卸载
@@ -181,20 +189,21 @@ sudo sh openclash-linux-0.48.011-x86_64.run --login-user alice      # 网页另�
 sudo /opt/openclash/rt/sbin/openclash-uninstall
 ```
 
-再次运行新版本的安装包就是升级（配置保留）。安装包解压后执行的就是本目录的 `install.sh --ipk <ipk> <运行时包>`。
+升级时直接运行新版本的安装包即可，配置会保留。安装包解压后实际执行的是本仓库的 `install.sh --ipk <ipk> <运行时包>`。
 
-只升级 OpenClash 插件不用重装：网页「检查更新」里的插件更新、「历史版本」降级都和路由器上一样，走上游的
-`openclash_update.sh`（下载 ipk → `opkg --noaction` 预检 → 由 procd 起一个更新服务执行 `opkg install`）。
-预检不过（包损坏、依赖不满足）直接退出，旧版不动；配置和 `/etc/openclash` 里的文件保留。上游没有自动回滚，
-装坏了就从「历史版本」装回旧版。容器里实测过：升级、坏包被拦、降级回原版（见下面「测试」）。
+只升级 OpenClash 插件不用重装：网页「检查更新」里的插件更新和「历史版本」降级都和路由器上一样，走上游的
+`openclash_update.sh`（下载 ipk → `opkg --noaction` 预检 → 由 procd 启动一个更新服务执行 `opkg install`）。
+预检不通过（包损坏、依赖不满足）时直接退出，旧版不受影响；配置和 `/etc/openclash` 里的文件会保留。上游没有自动回滚，
+装坏了就从「历史版本」装回旧版。以上在容器里实测过：升级、坏包被拦截、降级回原版（见下文「测试」）。
 
-- 「本机 DNS 劫持」的默认值和上游一样是 **dnsmasq 转发**（模式 1），见下面「DNS 劫持」。从旧版本升级上来的保持原来的设置（旧版本首次安装时设成了模式 2）。
+- 「本机 DNS 劫持」的默认值和上游一样，是 **dnsmasq 转发**（模式 1），见下文「DNS 劫持」。从旧版本升级的保留原设置（旧版本首次安装时设为模式 2）。
 - `/etc/config/network` 由 openclash-boot 首次按网卡生成：单网卡 = `lan`；两张网卡时默认路由那张 = `wan`、另一张 = `lan`。
   之后每次启动只刷新各接口的 `ipaddr`。改了接口要 `sudo systemctl restart openclash-rpcd`。
 - 已存在的 `/etc/config/*` 不覆盖；安装清单在 `/opt/openclash/rt/.manifest`，重装时会删掉上次装了、这次没有的文件。
   清单里结尾带 `/` 的是目录：卸载和升级清理时目录只会在空了以后 `rmdir`，绝不当文件删
   （运行时包里有 `/lib`、`/sbin`，合并 /usr 的发行版上它们是指向 `usr/` 的符号链接，删了系统起不来）；根目录下的条目一律不删。
-- 登录用系统 root 密码（rpcd `$p$root`，校验 `/etc/shadow`），和 OpenWrt 一样。另外 install.sh 会再加一个系统用户（默认是执行 sudo 的人，`--login-user` 可指定），用他自己的密码登录：Ubuntu 默认锁定 root，NAS 之类的系统 root 密码是装机时设的、用户不知道（飞牛 NAS 实测）。这个用户在网页上拥有全部权限，等同 root。
+- 和 OpenWrt 一样，登录用系统 root 密码（rpcd `$p$root`，校验 `/etc/shadow`）。install.sh 还会额外允许一个系统用户登录（默认是执行 sudo 的用户，可用 `--login-user` 指定），密码就是该用户自己的系统密码。
+  这是因为 Ubuntu 默认锁定 root，NAS 之类系统的 root 密码在装机时设定，用户并不知道（飞牛 NAS 实测）。这个用户在网页上拥有全部权限，等同 root。
 - 卸载会走上游的 postrm：删除 `/etc/openclash` 和 `/etc/config/openclash`（和 OpenWrt 上卸载一样）。
 
 ## DNS 劫持（模式 1：dnsmasq 转发）
@@ -222,7 +231,7 @@ sudo /opt/openclash/rt/sbin/openclash-uninstall
 
 ## 宿主防火墙
 
-nftables 里别的表丢弃的包，fw4 放行也没用，所以 `openclash-hostfw` 直接改宿主自己的防火墙（install.sh 和每次开机脚本调用，卸载时撤销）：
+nftables 里其他表丢弃的包，fw4 放行也没用，所以 `openclash-hostfw` 直接修改宿主自己的防火墙（由 install.sh 和每次开机脚本调用，卸载时撤销）：
 
 - **firewalld**：在局域网网卡所在区域（网卡没绑区域时用默认区域，并把网卡加进去）开网页、53（和 dnsmasq 改过的端口）、OpenClash 各端口（tcp+udp），
   开区域内转发（`forward`），把 `utun` 加进同一区域。**只加区域里原来没有的**：已在端口范围里的端口不加
@@ -243,8 +252,8 @@ nftables 里别的表丢弃的包，fw4 放行也没用，所以 `openclash-host
   插件经网页升级/坏包被拦/降级、卸载后整个文件系统和防火墙（含 firewalld 运行时/永久配置）与安装前逐条对比。
 - 实机：飞牛 fnOS（Debian 12 系）上用真实订阅测过 6 种运行模式（TCP 和 UDP 经节点）、只代理指定设备、本机流量不受影响。
 - 测试脚本（命名空间拓扑、容器、实机远程安全网）没有放进这个仓库。
-- 用不显示的浏览器窗口（自动化）打开网页时页面会一直停在「载入视图」：LuCI 把 RPC 请求攒到下一次重绘（`requestAnimationFrame`）才发，
-  窗口不重绘就不发。不是服务端的问题。
+- 用自动化浏览器在不显示的窗口里打开网页时，页面会一直停在「载入视图」：LuCI 会把 RPC 请求攒到下一次重绘（`requestAnimationFrame`）才发出，
+  窗口不重绘就不发。这不是服务端的问题。
 
 ## 注意
 
@@ -264,7 +273,7 @@ nftables 里别的表丢弃的包，fw4 放行也没用，所以 `openclash-host
 ## 已知问题
 
 1. SELinux（Fedora 默认 Enforcing）还没在实机上验证：容器里测不了。
-2. 没编 TLS（只走 HTTP，和方案 §4.4 一致）。
+2. 没有编译 TLS，网页只提供 HTTP（原设计如此）。
 3. `/etc/config/*` 由 uci 改写后，模板里的注释会消失。
 4. 系统状态页没有网络/DHCP/无线块（需要 `luci-rpc`）；浏览器控制台里登录页有一条 `uci/get Access denied`（匿名会话，OpenWrt 上也有）。
 5. 系统日志只取 journald 最近 1000 条，要更多改 `syslog-wrapper` 里的 `-n`。
